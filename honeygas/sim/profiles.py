@@ -102,6 +102,42 @@ class S7Spec:
 
 
 @dataclass
+class Iec104Point:
+    """A monitored point exposed over IEC 60870-5-104.
+
+    type_id selects the ASDU used in the interrogation response:
+      13 = M_ME_NC_1 (measured value, short float)   -> `tag`/`static` as float
+       1 = M_SP_NA_1 (single point, on/off)          -> state from `tag`/`static`
+    """
+    ioa: int
+    tag: Optional[str] = None
+    static: Optional[float] = None
+    type_id: int = 13
+    scale: float = 1.0
+    label: str = ""
+
+
+@dataclass
+class Iec104Command:
+    """A control point an attacker can try to operate over IEC 60870-5-104.
+
+    type_id: 45 = C_SC_NA_1 (single command), 46 = C_DC_NA_1 (double command),
+             50 = C_SE_NC_1 (set-point, short float).
+    """
+    ioa: int
+    type_id: int = 45
+    label: str = ""
+
+
+@dataclass
+class Iec104Spec:
+    common_address: int = 1
+    spontaneous_seconds: float = 0.0        # 0 disables periodic spontaneous data
+    points: List[Iec104Point] = field(default_factory=list)
+    commands: List[Iec104Command] = field(default_factory=list)
+
+
+@dataclass
 class Profile:
     name: str
     mode: str
@@ -112,6 +148,7 @@ class Profile:
     hmi: HmiSpec
     atg: Optional[AtgSpec] = None
     s7: Optional[S7Spec] = None
+    iec104: Optional[Iec104Spec] = None
 
 
 def _reg_map(raw: dict) -> Dict[int, RegEntry]:
@@ -212,6 +249,35 @@ def load_profile(d: dict) -> Profile:
             pdu_size=int(s.get("pdu_size", 480)),
         )
 
+    iec104 = None
+    ie = d.get("iec104")
+    if ie:
+        points = [
+            Iec104Point(
+                ioa=int(p["ioa"]),
+                tag=p.get("tag"),
+                static=(float(p["static"]) if p.get("static") is not None else None),
+                type_id=int(p.get("type_id", 13)),
+                scale=float(p.get("scale", 1.0)),
+                label=p.get("label", ""),
+            )
+            for p in (ie.get("points", []) or [])
+        ]
+        commands = [
+            Iec104Command(
+                ioa=int(c["ioa"]),
+                type_id=int(c.get("type_id", 45)),
+                label=c.get("label", ""),
+            )
+            for c in (ie.get("commands", []) or [])
+        ]
+        iec104 = Iec104Spec(
+            common_address=int(ie.get("common_address", 1)),
+            spontaneous_seconds=float(ie.get("spontaneous_seconds", 0.0)),
+            points=points,
+            commands=commands,
+        )
+
     return Profile(
         name=d.get("name", "Unnamed"),
         mode=d.get("mode", "transport"),
@@ -222,4 +288,5 @@ def load_profile(d: dict) -> Profile:
         hmi=hmi,
         atg=atg,
         s7=s7,
+        iec104=iec104,
     )

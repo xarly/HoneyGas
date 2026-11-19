@@ -83,5 +83,33 @@ s7:
   plant_id: "BIOMETHANE-PLANT-01"
   pdu_size: 480
 
+# IEC 60870-5-104 telecontrol points (RTU <-> SCADA master).
+#   points   -> monitored values returned on a General Interrogation and pushed
+#               spontaneously. type_id 13 = measured short float, 1 = single point.
+#   commands -> control points an attacker can try to operate. Every command is
+#               audited (high), inventoried as evidence, and applied ONLY to the
+#               attacker's isolated session view -- the simulated plant is untouched.
+iec104:
+  common_address: 1
+  spontaneous_seconds: 12          # periodic spontaneous updates while STARTDT is active
+  points:
+    - {ioa: 1001, tag: ch4_pct,             label: "CH4 purity (%)"}
+    - {ioa: 1002, tag: co2_pct,             label: "CO2 (%)"}
+    - {ioa: 1003, tag: h2s_ppm,             label: "H2S (ppm)"}
+    - {ioa: 1004, tag: digester1_temp_c,    label: "Digester 1 temp (C)"}
+    - {ioa: 1005, tag: biogas_flow_nm3h,    label: "Biogas flow (Nm3/h)"}
+    - {ioa: 1006, tag: injection_flow_nm3h, label: "Injection flow (Nm3/h)"}
+    - {ioa: 1007, tag: grid_pressure_bar,   label: "Grid pressure (bar)"}
+    - {ioa: 1008, tag: wobbe_index,         label: "Wobbe index (MJ/m3)"}
+    - {ioa: 1009, tag: compressor_speed_rpm,label: "Compressor speed (rpm)"}
+    - {ioa: 2001, type_id: 1, static: 1, label: "Plant running"}
+    - {ioa: 2002, type_id: 1, static: 1, label: "Grid injection enabled"}
+    - {ioa: 2003, type_id: 1, static: 0, label: "Flare active"}
+    - {ioa: 2004, type_id: 1, static: 0, label: "H2S high alarm"}
+  commands:
+    - {ioa: 3001, type_id: 45, label: "Grid injection enable/disable"}
+    - {ioa: 3002, type_id: 45, label: "Flare command"}
+    - {ioa: 3003, type_id: 50, label: "CH4 setpoint (short float)"}
+
 # No ATG in this profile; the atg_veeder listener will log/capture generically.
 atg: null

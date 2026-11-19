@@ -61,7 +61,7 @@ without touching code.
 | HMI (HTTP)   | 8080  | `HttpHmiService` | Operator web UI with default creds, **firmware upload**, and a **diagnostics** command-injection surface |
 | Veeder-Root ATG | 10001 | `AtgVeederService` | `I201xx` in-tank inventory + related reports (station / odorant tanks) |
 | S7comm       | 102   | `S7CommService` | Full emulation: COTP connect, Setup Comm, **Read SZL** PLC fingerprint (order no./firmware/serial), Read/Write Var, PLC STOP/START |
-| IEC 60870-5-104 | 2404 | `TcpCaptureService` | Fingerprint + capture (STARTDT confirm handshake) |
+| IEC 60870-5-104 | 2404 | `Iec104Service` | Full emulation: STARTDT/STOPDT/TESTFR, **General Interrogation** (live points), clock sync, spontaneous data, and audited **control commands** |
 | DNP3         | 20000 | `TcpCaptureService` | Connection + payload capture |
 
 Disable or re-port any of them in `config/honeygas.yaml`.
@@ -76,13 +76,15 @@ Disable or re-port any of them in `config/honeygas.yaml`.
 3. **Deliberately vulnerable versions** — dated firmware banners (Modbus FC43,
    HTTP `Server`/`/api/status`, S7 Read SZL), default/weak credentials, an
    unauthenticated-style firmware-flash endpoint, a command-injection
-   diagnostics field, and an unauthenticated S7 PLC STOP/START.
+   diagnostics field, an unauthenticated S7 PLC STOP/START, and unauthenticated
+   IEC-104 control commands (no RFC 2385 / TLS, as in the field).
 4. **Inject + exploit, while inventorying and auditing, isolated per attacker**:
    - *Inject malware* → `POST /firmware/upload`, S7 Write Var, and raw payloads
      on the capture ports are captured by `honeygas/core/quarantine.py`.
-   - *Exploit the vuln* → the `/diagnostics` injection, unknown ATG commands and
-     S7 PLC control are inventoried as **calls** (evidence), with canned success
-     returned so the attacker stays engaged.
+   - *Exploit the vuln* → the `/diagnostics` injection, unknown ATG commands,
+     S7 PLC control and IEC-104 control commands/set-points are inventoried as
+     **calls** (evidence), with canned success returned so the attacker stays
+     engaged.
    - *Inventory the binary/call* → hashed (MD5/SHA1/SHA256), type-tagged (magic
      bytes), stored under `data/quarantine/`, and appended to `inventory.jsonl`.
    - *Audit the event* → every interaction is one JSON line in
@@ -158,7 +160,8 @@ HoneyGas/
 │       ├── http_hmi.py          # HTTP HMI/SCADA web UI
 │       ├── atg.py               # Veeder-Root ATG serial-over-TCP
 │       ├── s7comm.py            # Siemens S7comm (TPKT/COTP/S7) full emulation
-│       └── tcp_capture.py       # generic capture front-end (IEC-104, DNP3)
+│       ├── iec104.py            # IEC 60870-5-104 telecontrol full emulation
+│       └── tcp_capture.py       # generic capture front-end (DNP3, …)
 ├── docker/
 │   ├── Dockerfile               # non-root, slim runtime image
 │   └── docker-compose.yml       # hardened stack (read-only, cap_drop, internal net)
@@ -240,12 +243,12 @@ lifecycle, convenience accessors (`audit`, `sessions`, `sim`, `quarantine`,
   in-tank inventory report built from the profile's `atg` tanks; any unrecognized
   command is inventoried as a `call` and acknowledged.
 - **`s7comm.py` — `S7CommService`** — full Siemens S7 emulation (see below).
-- **`tcp_capture.py` — `TcpCaptureService`** — a generic capture front-end used
-  for IEC-104 and DNP3. It performs a minimal protocol-plausible handshake (COTP
-  CC / IEC-104 STARTDT confirm) to keep scanners talking, logs `tcp.connect` /
-  `tcp.data` / `tcp.close`, and captures payloads over a size threshold. These
-  two are the natural candidates to promote to full emulation next, following the
-  S7comm pattern.
+- **`iec104.py` — `Iec104Service`** — full IEC 60870-5-104 emulation (see below).
+- **`tcp_capture.py` — `TcpCaptureService`** — a generic capture front-end, now
+  used for DNP3 (and any other port you point at it). It performs a minimal
+  protocol-plausible handshake to keep scanners talking, logs `tcp.connect` /
+  `tcp.data` / `tcp.close`, and captures payloads over a size threshold. It is
+  the fallback pattern for protocols not yet promoted to full emulation.
 
 ### S7comm emulation detail
 
@@ -281,6 +284,36 @@ Siemens firmware as bait:
 | `transport` | `6ES7 315-2EH14-0AB0` | CPU 315-2 PN/DP | V3.2.6 | `GASNODE07_S7` |
 | `biomethane` | `6ES7 1512-1AK01-0AB0` | CPU 1512C-1 PN | V2.6.1 | `BIOUPGRADE_PLC` |
 
+### IEC-104 emulation detail
+
+`iec104.py` implements the telecontrol protocol spoken between a SCADA master
+and an RTU/substation gateway over TCP/2404 — **APCI (`0x68`/len/4 control
+octets) → ASDU (type, VSQ, cause-of-transmission, common address, information
+objects)** — with full I/S/U frame handling and 15-bit send/receive sequence
+numbers:
+
+- **U-format** `STARTDT` / `STOPDT` / `TESTFR` → the matching `*_con`; data
+  transfer is enabled only after `STARTDT` → `iec104.startdt` / `iec104.testfr`.
+- **General Interrogation** (`C_IC_NA_1`, type 100) → activation confirmation,
+  then the current value of **every monitored point** — measured short floats
+  (`M_ME_NC_1`) from the live simulator plus single-point states
+  (`M_SP_NA_1`) — with COT=20, then activation termination → `iec104.interrogation`.
+- **Clock synchronisation** (`C_CS_NA_1`) → `actcon` with a fresh `CP56Time2a`.
+- **Counter interrogation** (`C_CI_NA_1`) → `actcon` + `actterm`.
+- **Control commands** (`C_SC_NA_1` single, `C_DC_NA_1` double, `C_SE_NC_1`
+  set-point short-float, …) → logged at **`high`**, inventoried as evidence via
+  `capture_call`, applied **only to the attacker's isolated session view**, and
+  positively confirmed (`actcon` + `actterm`) so the attacker believes the
+  command took effect — the simulated plant is untouched → `iec104.command`.
+- **Spontaneous transmission** — while `STARTDT` is active, measured values are
+  pushed periodically (`M_ME_TF_1`, COT=3, with `CP56Time2a`), so a passive
+  observer sees a live installation (`spontaneous_seconds` in the profile).
+- Any other ASDU is audited (`iec104.unknown_asdu`) and large ones inventoried.
+
+Points and controls are defined per-profile in the `iec104:` block (common
+address, monitored points by IOA/tag, control IOAs). If a profile omits the
+block, measured points are synthesized from its HMI tag list.
+
 ### Audit event taxonomy
 
 Every line in `data/audit/honeygas-audit.jsonl` carries `ts`, `event_id`,
@@ -306,7 +339,12 @@ Every line in `data/audit/honeygas-audit.jsonl` carries `ts`, `event_id`,
 | s7 | `s7.read_var` | info | variable/DB read |
 | s7 | `s7.write_var` | **high** | variable/DB write (into overlay) |
 | s7 | `s7.plc_control` | **critical** | PLC STOP/START attempt |
-| tcp | `tcp.connect` / `tcp.data` / `tcp.close` | notice / info | capture-port activity (IEC-104, DNP3) |
+| iec104 | `iec104.connect` / `iec104.startdt` | notice | session / STARTDT activation |
+| iec104 | `iec104.interrogation` / `iec104.interrogation_response` | notice / info | General Interrogation + its live response |
+| iec104 | `iec104.clock_sync` / `iec104.counter_interrogation` | notice | clock sync / counter interrogation |
+| iec104 | `iec104.command` | **high** | control command / set-point (into session view) |
+| iec104 | `iec104.spontaneous` | debug | periodic spontaneous value push |
+| tcp | `tcp.connect` / `tcp.data` / `tcp.close` | notice / info | capture-port activity (DNP3, …) |
 
 ### Data model (profile schema)
 
@@ -329,6 +367,10 @@ A profile YAML (`config/profile_<mode>.yaml`) is parsed by
 - **`S7Spec`** — `order_number`, `basic_hardware`, `firmware`, `module_type`,
   `system_name`, `serial`, `copyright`, `plant_id`, `pdu_size` (S7 Read SZL
   identity).
+- **`Iec104Spec`** — `common_address`, `spontaneous_seconds`, `points[]`
+  (**`Iec104Point`** = `ioa`, `tag`/`static`, `type_id` [13 float / 1 single],
+  `scale`, `label`) and `commands[]` (**`Iec104Command`** = `ioa`, `type_id`
+  [45 single / 46 double / 50 set-point], `label`).
 
 ---
 
@@ -384,11 +426,14 @@ so runtime captures never land in version control.
   firmware, module type, serial) to change what Read SZL fingerprinting
   returns. S7comm Read/Write Var map to the same process/register space as
   Modbus (DB words ↔ input/holding registers).
+- **IEC-104 points:** edit the `iec104:` block in a profile (common address,
+  monitored points by IOA/tag, control IOAs, spontaneous interval) to change
+  what a General Interrogation returns and which controls an attacker can try.
 - **New protocol:** subclass `honeygas.protocols.base.Service`, register it in
   `SERVICE_TYPES` in `honeygas/main.py`, add a listener entry in the config.
-  Modbus and S7comm are full emulations; IEC-104 and DNP3 are the natural
-  candidates to promote from capture to full emulation next (see
-  `honeygas/protocols/s7comm.py` for the pattern).
+  Modbus, S7comm and IEC-104 are full emulations; DNP3 is the natural candidate
+  to promote from capture to full emulation next (see
+  `honeygas/protocols/s7comm.py` or `iec104.py` for the pattern).
 - **YARA tagging:** set `quarantine.enable_yara: true`, drop rules at
   `config/rules.yar`, and `pip install yara-python`.
 

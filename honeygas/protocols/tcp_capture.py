@@ -1,5 +1,6 @@
 """Generic TCP capture service for protocols we fingerprint but don't fully
-emulate yet (S7comm/ISO-TSAP on 102, IEC 60870-5-104 on 2404, DNP3 on 20000).
+emulate yet (e.g. DNP3 on 20000). Modbus, S7comm and IEC-104 have dedicated
+full-emulation services; this is the fallback pattern for the rest.
 
 Goals:
   * Keep the port open and answer the initial handshake just enough that a

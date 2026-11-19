@@ -78,6 +78,32 @@ s7:
   plant_id: "DISTRIB-STATION-07"
   pdu_size: 480
 
+# IEC 60870-5-104 telecontrol points (RTU <-> SCADA master).
+#   points   -> monitored values returned on a General Interrogation and pushed
+#               spontaneously. type_id 13 = measured short float, 1 = single point.
+#   commands -> control points an attacker can try to operate. Every command is
+#               audited (high), inventoried as evidence, and applied ONLY to the
+#               attacker's isolated session view -- the simulated plant is untouched.
+iec104:
+  common_address: 1
+  spontaneous_seconds: 12          # periodic spontaneous updates while STARTDT is active
+  points:
+    - {ioa: 1001, tag: line_pressure_bar,   label: "Line pressure (bar)"}
+    - {ioa: 1002, tag: flow_rate_knm3h,     label: "Flow rate (kNm3/h)"}
+    - {ioa: 1003, tag: gas_temperature_c,   label: "Gas temperature (C)"}
+    - {ioa: 1004, tag: inlet_pressure_bar,  label: "Inlet pressure (bar)"}
+    - {ioa: 1005, tag: outlet_pressure_bar, label: "Outlet pressure (bar)"}
+    - {ioa: 1006, tag: valve_position_pct,  label: "Valve position (%)"}
+    - {ioa: 1007, tag: odorant_level_pct,   label: "Odorant level (%)"}
+    - {ioa: 2001, type_id: 1, static: 1, label: "Station online"}
+    - {ioa: 2002, type_id: 1, static: 1, label: "Main valve open"}
+    - {ioa: 2003, type_id: 1, static: 0, label: "ESD trip"}
+    - {ioa: 2004, type_id: 1, static: 0, label: "Gas leak alarm"}
+  commands:
+    - {ioa: 3001, type_id: 45, label: "ESD valve (single command)"}
+    - {ioa: 3002, type_id: 45, label: "Main valve open/close"}
+    - {ioa: 3003, type_id: 50, label: "Pressure setpoint (short float)"}
+
 # Veeder-Root style Automatic Tank Gauge (odorant / condensate tanks).
 atg:
   station: "DISTRIBUTION STATION 07"

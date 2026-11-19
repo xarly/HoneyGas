@@ -61,7 +61,7 @@ listeners:
     label: "S7comm / ISO-TSAP (Siemens S7)"
 
   - name: iec104
-    type: tcp_capture
+    type: iec104
     port: 2404
     enabled: true
     label: "IEC 60870-5-104"

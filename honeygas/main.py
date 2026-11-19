@@ -22,6 +22,7 @@ from .core.quarantine import Quarantine
 from .core.sessions import SessionManager
 from .protocols.atg import AtgVeederService
 from .protocols.http_hmi import HttpHmiService
+from .protocols.iec104 import Iec104Service
 from .protocols.modbus import ModbusService
 from .protocols.s7comm import S7CommService
 from .protocols.tcp_capture import TcpCaptureService
@@ -33,6 +34,7 @@ SERVICE_TYPES = {
     "http_hmi": HttpHmiService,
     "atg_veeder": AtgVeederService,
     "s7comm": S7CommService,
+    "iec104": Iec104Service,
     "tcp_capture": TcpCaptureService,
 }
 
