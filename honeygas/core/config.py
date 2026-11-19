@@ -12,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from .alerts import AlertConfig
 from .limits import ResourceLimits
 
 
@@ -40,6 +41,7 @@ class Config:
     yara_rules: Path
     session_idle_timeout: int
     limits: ResourceLimits
+    alerts: AlertConfig
     listeners: list[Listener]
     base_dir: Path
     raw: dict = field(default_factory=dict)
@@ -92,6 +94,7 @@ def load_config(path: str | Path) -> Config:
         yara_rules=_resolve(base_dir, quar.get("yara_rules", "config/rules.yar")),
         session_idle_timeout=int(iso.get("session_idle_timeout_seconds", 1800)),
         limits=ResourceLimits.from_dict(iso.get("limits", {})),
+        alerts=AlertConfig.from_dict(raw.get("alerts", {})),
         listeners=listeners,
         base_dir=base_dir,
         raw=raw,

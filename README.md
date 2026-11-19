@@ -32,6 +32,7 @@ training. It is **not** an attack tool and contains no real exploits.
   - [IEC-104 emulation detail](#iec-104-emulation-detail)
   - [DNP3 emulation detail](#dnp3-emulation-detail)
   - [Audit event taxonomy](#audit-event-taxonomy)
+  - [Out-of-band alerting](#out-of-band-alerting)
   - [Data model (profile schema)](#data-model-profile-schema)
 - [Quick start (local)](#quick-start-local)
 - [Deployment (Docker)](#deployment-docker-recommended)
@@ -156,6 +157,7 @@ HoneyGas/
 │   │   ├── audit.py             # AuditLogger: structured JSONL events
 │   │   ├── sessions.py          # SessionManager + per-attacker Session overlays (bounded, LRU-capped)
 │   │   ├── limits.py            # ResourceGovernor: per-attacker connection quotas (cgroup equivalent)
+│   │   ├── alerts.py            # AlertDispatcher: out-of-band push (syslog/CEF + webhook)
 │   │   └── quarantine.py        # Quarantine: capture/hash/type/inventory (never executes)
 │   ├── sim/
 │   │   ├── profiles.py          # typed profile model + loader
@@ -203,8 +205,9 @@ HoneyGas/
 | Module | Key types / functions | Responsibility |
 |--------|-----------------------|----------------|
 | `config.py` | `Config`, `Listener`, `load_config()`, `load_profile_dict()` | Parse the main YAML into dataclasses; resolve paths against the project root (`<root>/config/..` → `<root>`). |
-| `context.py` | `Context` | Immutable bundle (`config`, `audit`, `sessions`, `quarantine`, `sim`, `profile`, `governor`) handed to every service. |
-| `audit.py` | `AuditLogger.log()`, `SEVERITIES` | Append one JSON object per event to the audit file; optional severity-filtered stdout echo. Severities: `debug < info < notice < warning < high < critical`. |
+| `context.py` | `Context` | Immutable bundle (`config`, `audit`, `sessions`, `quarantine`, `sim`, `profile`, `governor`, `alerts`) handed to every service. |
+| `audit.py` | `AuditLogger.log()`, `SEVERITIES` | Append one JSON object per event to the audit file; optional severity-filtered stdout echo, and hand each event to the optional alert sink. Severities: `debug < info < notice < warning < high < critical`. |
+| `alerts.py` | `AlertConfig`, `AlertDispatcher`, `to_cef()` | Out-of-band push of high-signal events to the operator's monitoring — syslog/CEF and/or webhook — on a background thread. Off by default; see [Out-of-band alerting](#out-of-band-alerting). |
 | `sessions.py` | `Session`, `BoundedDict`, `SessionManager.get()` / `purge_idle()` | One `Session` per `(src_ip, service)`, each with a **bounded** copy-on-write `overlay`, free-form `store`, and list of `captured` ids; a global session cap with least-recently-seen reclaim. |
 | `limits.py` | `ResourceLimits`, `ResourceGovernor` | Per-attacker resource quotas (concurrent connections per-IP / total, new-connection rate) — the in-process cgroup equivalent, enforced in `Service._serve`. |
 | `quarantine.py` | `Quarantine.capture_binary()` / `capture_call()`, `CaptureRecord` | Hash (MD5/SHA1/SHA256), magic-byte type detection, de-duplicated storage as `<sha256>.quarantine` (`0o400`), append to `inventory.jsonl`, optional YARA matching. **Never executes.** |
@@ -451,6 +454,7 @@ Every line in `data/audit/honeygas-audit.jsonl` carries `ts`, `event_id`,
 | core | `sessions.purged` | debug | idle sessions / rate windows reclaimed |
 | core | `isolation.connection_rejected` | warning | a per-attacker connection quota (per-IP / total / rate) refused a connection |
 | core | `isolation.session_evicted` | warning | session cap reached; least-recently-seen session reclaimed |
+| core | `alert.sink_started` | info | out-of-band alert sink enabled (lists the configured sinks) |
 | quarantine | `capture.binary` | **critical** | an injected payload/file was captured |
 | quarantine | `capture.call` | **critical** | an injected command/RPC was inventoried |
 | modbus | `modbus.connect` / `modbus.read` | notice / info | connection / register poll |
@@ -474,6 +478,40 @@ Every line in `data/audit/honeygas-audit.jsonl` carries `ts`, `event_id`,
 | dnp3 | `dnp3.control` | **high** | SELECT/OPERATE on a CROB or analog output (into session view) |
 | dnp3 | `dnp3.restart` | **critical** | COLD/WARM restart attempt |
 | tcp | `tcp.connect` / `tcp.data` / `tcp.close` | notice / info | generic capture fallback (unused by default) |
+
+### Out-of-band alerting
+
+The audit file is the complete record; the **alert sink** (`honeygas/core/alerts.py`)
+is the *push* side of it — it forwards the high-signal events, as they happen,
+to the operator's own monitoring. It is the control layer's "alert silently"
+piece: events go out-of-band and **nothing is ever sent back to the attacker**.
+
+- **What is forwarded** — every event with `severity >= min_severity` (default
+  `high`), so the control-tampering writes/commands (`*.write`, `iec104.command`,
+  `dnp3.control`), the PLC/restart attempts and every capture (`critical`), and
+  the quota breaches (`warning`, if you lower the threshold). The sink's own
+  events (`alert.*`) are never re-dispatched.
+- **syslog / CEF** — UDP or TCP to your SIEM (ArcSight / QRadar / Splunk /
+  rsyslog). Each event becomes a CEF record:
+  `CEF:0|HoneyGas|<site>|<ver>|<event>|<event>|<sev>|src=… spt=… proto=… app=… cs1=<session> …`
+  with our six severities mapped to CEF 0–10.
+- **webhook** — an HTTP `POST` of the full JSON event to a URL you control, with
+  optional custom headers (e.g. an `Authorization` bearer token).
+- **Non-blocking & fail-safe** — delivery runs on a background worker thread fed
+  by a bounded queue, so a slow or unreachable SIEM never stalls the asyncio
+  event loop or a protocol handler; a full queue drops (and counts) events, and
+  any delivery error is swallowed. Alerting can never affect the honeypot or the
+  attacker-facing responses.
+
+Configure it under `alerts:` in `config/honeygas.yaml` (disabled by default):
+
+```yaml
+alerts:
+  enabled: true
+  min_severity: high            # debug|info|notice|warning|high|critical
+  syslog:  {enabled: true, host: "10.0.0.5", port: 514, protocol: udp, facility: 16}
+  webhook: {enabled: true, url: "https://siem.example/hooks/honeygas", timeout_seconds: 4.0}
+```
 
 ### Data model (profile schema)
 

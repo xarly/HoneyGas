@@ -50,6 +50,28 @@ isolation:
     max_overlay_entries: 4096         # writable points held per session
     max_store_entries: 256            # scratch keys held per session
 
+# Out-of-band alerting (the "push" side of the audit log). High-signal events
+# (>= min_severity) are forwarded, as they happen, to YOUR OWN monitoring --
+# never to the attacker. Delivery runs on a background thread, so a slow or
+# unreachable SIEM never blocks the honeypot; failures are best-effort.
+# Disabled by default; the destinations below are examples. The full audit
+# trail is always written to the audit file regardless of these settings.
+alerts:
+  enabled: false
+  min_severity: high                # debug|info|notice|warning|high|critical
+  queue_size: 2048                  # events buffered before new ones are dropped
+  syslog:
+    enabled: false
+    host: "127.0.0.1"               # your SIEM / syslog collector
+    port: 514
+    protocol: udp                   # udp | tcp  (CEF format: ArcSight/QRadar/Splunk/rsyslog)
+    facility: 16                    # 16 = local0
+  webhook:
+    enabled: false
+    url: ""                         # https endpoint that receives a JSON POST per event
+    timeout_seconds: 4.0
+    headers: {}                     # e.g. {Authorization: "Bearer ..."}
+
 # Services (listeners) to expose. Disable any you do not want.
 # Ports are the ICS defaults; remap them if you prefer.
 listeners:

@@ -15,6 +15,7 @@ import asyncio
 import signal
 import sys
 
+from .core.alerts import AlertDispatcher
 from .core.audit import AuditLogger
 from .core.config import load_config, load_profile_dict
 from .core.context import Context
@@ -49,12 +50,18 @@ def build_context(config_path: str, mode_override: str | None) -> Context:
 
     profile = load_profile(load_profile_dict(config.base_dir, config.mode))
 
+    alerts = AlertDispatcher(config.alerts, site=config.site_name)
+    alerts.start()
     audit = AuditLogger(
         audit_file=config.audit_file,
         site=config.site_name,
         echo_stdout=config.echo_stdout,
         level=config.log_level,
+        sink=alerts,
     )
+    if alerts.enabled:
+        audit.log("alert.sink_started", severity="info", service="core",
+                  sinks=alerts.sinks, min_severity=config.alerts.min_severity)
     quarantine = Quarantine(
         directory=config.quarantine_dir,
         max_bytes=config.max_capture_bytes,
@@ -78,6 +85,7 @@ def build_context(config_path: str, mode_override: str | None) -> Context:
         sim=sim,
         profile=profile,
         governor=governor,
+        alerts=alerts,
     )
 
 
@@ -158,6 +166,7 @@ async def run(ctx: Context) -> None:
         for svc in started:
             await svc.stop()
         ctx.audit.log("honeygas.stop", severity="notice", service="core")
+        ctx.alerts.stop()
 
 
 def main(argv=None) -> int:

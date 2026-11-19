@@ -32,11 +32,15 @@ class AuditLogger:
         site: str,
         echo_stdout: bool = True,
         level: str = "INFO",
+        sink: Optional[Any] = None,
     ) -> None:
         self.audit_file = Path(audit_file)
         self.site = site
         self.echo_stdout = echo_stdout
         self.min_level = level.lower()
+        # Optional out-of-band alert sink (duck-typed: must expose handle(record)).
+        # Kept behind a best-effort guard so it can never affect the honeypot.
+        self._sink = sink
         self._lock = threading.Lock()
         self.audit_file.parent.mkdir(parents=True, exist_ok=True)
         # Touch the file so operators see it exists immediately.
@@ -85,6 +89,13 @@ class AuditLogger:
                     f"[{record['ts']}] {tag} {service or '-':10s} {src:21s} {event} {summary}\n"
                 )
                 sys.stdout.flush()
+        # Forward to the out-of-band alert sink, outside the lock and fully
+        # guarded: alerting must never block or break the honeypot.
+        if self._sink is not None:
+            try:
+                self._sink.handle(record)
+            except Exception:  # noqa: BLE001
+                pass
         return record
 
     @staticmethod
