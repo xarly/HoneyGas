@@ -104,6 +104,32 @@ iec104:
     - {ioa: 3002, type_id: 45, label: "Main valve open/close"}
     - {ioa: 3003, type_id: 50, label: "Pressure setpoint (short float)"}
 
+# DNP3 outstation (SCADA master <-> RTU), TCP/20000. Mirrors the IEC-104 points.
+#   points   -> monitored data returned on a Class 0 / static read (live values):
+#               group 30 = analog input (float), 1 = binary input, 20 = counter.
+#   controls -> operable points. Every SELECT/OPERATE is audited, inventoried as
+#               evidence, and applied ONLY to the attacker's isolated session view:
+#               group 12 = CROB (relay output), 41 = analog output block.
+dnp3:
+  source_address: 1024
+  points:
+    - {index: 0, group: 30, tag: line_pressure_bar,   label: "Line pressure (bar)"}
+    - {index: 1, group: 30, tag: flow_rate_knm3h,     label: "Flow rate (kNm3/h)"}
+    - {index: 2, group: 30, tag: gas_temperature_c,   label: "Gas temperature (C)"}
+    - {index: 3, group: 30, tag: inlet_pressure_bar,  label: "Inlet pressure (bar)"}
+    - {index: 4, group: 30, tag: outlet_pressure_bar, label: "Outlet pressure (bar)"}
+    - {index: 5, group: 30, tag: valve_position_pct,  label: "Valve position (%)"}
+    - {index: 6, group: 30, tag: odorant_level_pct,   label: "Odorant level (%)"}
+    - {index: 0, group: 1,  static: 1, label: "Station online"}
+    - {index: 1, group: 1,  static: 1, label: "Main valve open"}
+    - {index: 2, group: 1,  static: 0, label: "ESD trip"}
+    - {index: 3, group: 1,  static: 0, label: "Gas leak alarm"}
+    - {index: 0, group: 20, tag: custody_totalizer_m3, label: "Custody totalizer (m3)"}
+  controls:
+    - {index: 0, group: 12, label: "ESD valve (CROB)"}
+    - {index: 1, group: 12, label: "Main valve (CROB)"}
+    - {index: 0, group: 41, label: "Pressure setpoint (analog output)"}
+
 # Veeder-Root style Automatic Tank Gauge (odorant / condensate tanks).
 atg:
   station: "DISTRIBUTION STATION 07"

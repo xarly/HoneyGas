@@ -138,6 +138,43 @@ class Iec104Spec:
 
 
 @dataclass
+class Dnp3Point:
+    """A monitored point exposed over DNP3 (returned on a Class 0 / static read).
+
+    group selects the DNP3 object group / static response variation:
+       1  = Binary Input          -> g1v2  (flags + state bit)
+      20  = Counter               -> g20v1 (flags + 32-bit value)
+      30  = Analog Input          -> g30v5 (flags + 32-bit float)
+    """
+    index: int
+    group: int = 30
+    tag: Optional[str] = None
+    static: Optional[float] = None
+    scale: float = 1.0
+    label: str = ""
+
+
+@dataclass
+class Dnp3Control:
+    """A control point an attacker can try to operate over DNP3.
+
+    group selects the operate object / status read-back group:
+      12 = Control Relay Output Block (CROB) -> status read back as g10 (Binary Output)
+      41 = Analog Output Block                -> status read back as g40 (Analog Output)
+    """
+    index: int
+    group: int = 12
+    label: str = ""
+
+
+@dataclass
+class Dnp3Spec:
+    source_address: int = 1024       # this outstation's data-link address
+    points: List[Dnp3Point] = field(default_factory=list)
+    controls: List[Dnp3Control] = field(default_factory=list)
+
+
+@dataclass
 class Profile:
     name: str
     mode: str
@@ -149,6 +186,7 @@ class Profile:
     atg: Optional[AtgSpec] = None
     s7: Optional[S7Spec] = None
     iec104: Optional[Iec104Spec] = None
+    dnp3: Optional[Dnp3Spec] = None
 
 
 def _reg_map(raw: dict) -> Dict[int, RegEntry]:
@@ -278,6 +316,34 @@ def load_profile(d: dict) -> Profile:
             commands=commands,
         )
 
+    dnp3 = None
+    dn = d.get("dnp3")
+    if dn:
+        dpoints = [
+            Dnp3Point(
+                index=int(p["index"]),
+                group=int(p.get("group", 30)),
+                tag=p.get("tag"),
+                static=(float(p["static"]) if p.get("static") is not None else None),
+                scale=float(p.get("scale", 1.0)),
+                label=p.get("label", ""),
+            )
+            for p in (dn.get("points", []) or [])
+        ]
+        dcontrols = [
+            Dnp3Control(
+                index=int(c["index"]),
+                group=int(c.get("group", 12)),
+                label=c.get("label", ""),
+            )
+            for c in (dn.get("controls", []) or [])
+        ]
+        dnp3 = Dnp3Spec(
+            source_address=int(dn.get("source_address", 1024)),
+            points=dpoints,
+            controls=dcontrols,
+        )
+
     return Profile(
         name=d.get("name", "Unnamed"),
         mode=d.get("mode", "transport"),
@@ -289,4 +355,5 @@ def load_profile(d: dict) -> Profile:
         atg=atg,
         s7=s7,
         iec104=iec104,
+        dnp3=dnp3,
     )

@@ -1,6 +1,8 @@
 """Generic TCP capture service for protocols we fingerprint but don't fully
-emulate yet (e.g. DNP3 on 20000). Modbus, S7comm and IEC-104 have dedicated
-full-emulation services; this is the fallback pattern for the rest.
+emulate yet. Modbus, HTTP, ATG, S7comm, IEC-104 and DNP3 all have dedicated
+full-emulation services, so nothing in the shipped config uses this anymore;
+it remains the fallback pattern for any new port you point at it before it is
+promoted to a dedicated module (set a listener's ``type: tcp_capture``).
 
 Goals:
   * Keep the port open and answer the initial handshake just enough that a

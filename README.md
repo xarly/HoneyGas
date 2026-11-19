@@ -30,6 +30,7 @@ training. It is **not** an attack tool and contains no real exploits.
   - [Per-attacker isolation model](#per-attacker-isolation-model)
   - [S7comm emulation detail](#s7comm-emulation-detail)
   - [IEC-104 emulation detail](#iec-104-emulation-detail)
+  - [DNP3 emulation detail](#dnp3-emulation-detail)
   - [Audit event taxonomy](#audit-event-taxonomy)
   - [Data model (profile schema)](#data-model-profile-schema)
 - [Quick start (local)](#quick-start-local)
@@ -63,7 +64,7 @@ without touching code.
 | Veeder-Root ATG | 10001 | `AtgVeederService` | `I201xx` in-tank inventory + related reports (station / odorant tanks) |
 | S7comm       | 102   | `S7CommService` | Full emulation: COTP connect, Setup Comm, **Read SZL** PLC fingerprint (order no./firmware/serial), Read/Write Var, PLC STOP/START |
 | IEC 60870-5-104 | 2404 | `Iec104Service` | Full emulation: STARTDT/STOPDT/TESTFR, **General Interrogation** (live points), clock sync, spontaneous data, and audited **control commands** |
-| DNP3         | 20000 | `TcpCaptureService` | Connection + payload capture |
+| DNP3         | 20000 | `Dnp3Service` | Full emulation: link layer (framing + DNP3 CRC), Request Link Status, **Class 0 integrity read** (live analog/binary/counter points), restart-bit handling, and audited **SELECT/OPERATE** controls (CROB + analog) |
 
 Disable or re-port any of them in `config/honeygas.yaml`.
 
@@ -166,7 +167,8 @@ HoneyGas/
 │       ├── atg.py               # Veeder-Root ATG serial-over-TCP
 │       ├── s7comm.py            # Siemens S7comm (TPKT/COTP/S7) full emulation
 │       ├── iec104.py            # IEC 60870-5-104 telecontrol full emulation
-│       └── tcp_capture.py       # generic capture front-end (DNP3, …)
+│       ├── dnp3.py              # DNP3 outstation (link/transport/application) full emulation
+│       └── tcp_capture.py       # generic capture fallback (no listener wired by default)
 ├── docker/
 │   ├── Dockerfile               # non-root, slim runtime image
 │   └── docker-compose.yml       # hardened stack (read-only, cap_drop, internal net)
@@ -250,11 +252,14 @@ lifecycle, convenience accessors (`audit`, `sessions`, `sim`, `quarantine`,
   command is inventoried as a `call` and acknowledged.
 - **`s7comm.py` — `S7CommService`** — full Siemens S7 emulation (see below).
 - **`iec104.py` — `Iec104Service`** — full IEC 60870-5-104 emulation (see below).
-- **`tcp_capture.py` — `TcpCaptureService`** — a generic capture front-end, now
-  used for DNP3 (and any other port you point at it). It performs a minimal
-  protocol-plausible handshake to keep scanners talking, logs `tcp.connect` /
-  `tcp.data` / `tcp.close`, and captures payloads over a size threshold. It is
-  the fallback pattern for protocols not yet promoted to full emulation.
+- **`dnp3.py` — `Dnp3Service`** — full DNP3 outstation emulation (see below).
+- **`tcp_capture.py` — `TcpCaptureService`** — a generic capture front-end. All
+  six shipped listeners now use dedicated full-emulation services, so nothing in
+  the default config uses this; it remains the fallback for any new port you
+  point at it (`type: tcp_capture`) before promoting it to its own module. It
+  performs a minimal protocol-plausible handshake to keep scanners talking, logs
+  `tcp.connect` / `tcp.data` / `tcp.close`, and captures payloads over a size
+  threshold.
 
 ### Per-attacker isolation model
 
@@ -389,6 +394,49 @@ Points and controls are defined per-profile in the `iec104:` block (common
 address, monitored points by IOA/tag, control IOAs). If a profile omits the
 block, measured points are synthesized from its HMI tag list.
 
+### DNP3 emulation detail
+
+`dnp3.py` implements the full DNP3 three-layer stack spoken between a SCADA
+master and an outstation/RTU over TCP/20000:
+
+    Data Link (0x05 0x64 | len | ctrl | dest | src | CRC, 16-byte data blocks
+               each with their own CRC)
+      -> Transport function (1-byte FIR/FIN/sequence)
+        -> Application (app control | function | IIN | objects)
+
+- **DNP3 CRC** — the link-layer CRC (poly `0x3D65`, reflected, one's-complement
+  final) is computed on every header and data block, so frames are accepted by
+  real masters and tools (verified against the CRC-16/DNP catalog check value
+  `0xEA82`).
+- **Data-link requests** — `Request Link Status` → `Link Status` (function 11),
+  `Reset Link` / `Test Link` → `ACK`, with the source/destination addresses
+  swapped and answered as the address the master targeted → `dnp3.link_status` /
+  `dnp3.reset_link`.
+- **READ Class 0 / static (integrity poll)** — a RESPONSE carrying the current
+  value of every monitored point: analog inputs (`g30v5`, 32-bit float from the
+  live simulator), binary inputs (`g1v2`), counters (`g20v1`), plus the output
+  status points (`g10` / `g40`) reflecting this attacker's isolated control
+  state → `dnp3.read`. Event-class-only polls get an empty (quiet) response.
+- **Device restart bit** — the first responses assert IIN1.7 (device restart),
+  as a freshly-started outstation would, until the master clears it with a
+  `WRITE` of the Internal Indications (`g80v1`) → `dnp3.write`.
+- **SELECT / OPERATE / DIRECT_OPERATE** — the control-tampering event: CROB
+  (`g12`, relays) and analog output blocks (`g41`, set-points) are logged at
+  **`high`** (SELECT, which only arms, at `notice`), inventoried as evidence via
+  `capture_call`, applied **only to the attacker's isolated session view**, and
+  positively confirmed with status = SUCCESS so the attacker believes the relay
+  / set-point took effect. The simulated plant is untouched → `dnp3.control`.
+- **COLD_RESTART / WARM_RESTART** — logged at **`critical`**, inventoried, and
+  answered with a time-delay object — simulated only → `dnp3.restart`.
+- **ENABLE/DISABLE unsolicited, DELAY_MEASURE, CONFIRM** — plausible answers.
+- Any unsupported function is answered with the "function not supported" IIN bit
+  and inventoried → `dnp3.unknown_function`.
+
+Points and controls are defined per-profile in the `dnp3:` block (outstation
+link address, monitored points by index/group/tag, control points by
+index/group). If a profile omits the block, analog inputs are synthesized from
+its HMI tag list.
+
 ### Audit event taxonomy
 
 Every line in `data/audit/honeygas-audit.jsonl` carries `ts`, `event_id`,
@@ -421,7 +469,11 @@ Every line in `data/audit/honeygas-audit.jsonl` carries `ts`, `event_id`,
 | iec104 | `iec104.clock_sync` / `iec104.counter_interrogation` | notice | clock sync / counter interrogation |
 | iec104 | `iec104.command` | **high** | control command / set-point (into session view) |
 | iec104 | `iec104.spontaneous` | debug | periodic spontaneous value push |
-| tcp | `tcp.connect` / `tcp.data` / `tcp.close` | notice / info | capture-port activity (DNP3, …) |
+| dnp3 | `dnp3.connect` / `dnp3.link_status` / `dnp3.reset_link` | notice / info | session / data-link requests |
+| dnp3 | `dnp3.read` / `dnp3.write` | info / notice | Class 0 integrity read / Internal-Indications write |
+| dnp3 | `dnp3.control` | **high** | SELECT/OPERATE on a CROB or analog output (into session view) |
+| dnp3 | `dnp3.restart` | **critical** | COLD/WARM restart attempt |
+| tcp | `tcp.connect` / `tcp.data` / `tcp.close` | notice / info | generic capture fallback (unused by default) |
 
 ### Data model (profile schema)
 
@@ -429,7 +481,7 @@ A profile YAML (`config/profile_<mode>.yaml`) is parsed by
 `honeygas/sim/profiles.py:load_profile()` into these dataclasses:
 
 - **`Profile`** — `name`, `mode`, `vendor`, `credentials[]`, `tags[]`, `modbus`,
-  `hmi`, optional `atg`, optional `s7`.
+  `hmi`, optional `atg`, optional `s7`, optional `iec104`, optional `dnp3`.
 - **`TagSpec`** — `name`, `unit`, `kind` (`sine`/`counter`/`setpoint`), `base`,
   `amp`, `period`, `noise`, `rate`, `min`, `max`.
 - **`ModbusMap`** — `unit` + four address→`RegEntry` maps (`input_registers`,
@@ -448,6 +500,10 @@ A profile YAML (`config/profile_<mode>.yaml`) is parsed by
   (**`Iec104Point`** = `ioa`, `tag`/`static`, `type_id` [13 float / 1 single],
   `scale`, `label`) and `commands[]` (**`Iec104Command`** = `ioa`, `type_id`
   [45 single / 46 double / 50 set-point], `label`).
+- **`Dnp3Spec`** — `source_address` (outstation link address), `points[]`
+  (**`Dnp3Point`** = `index`, `group` [30 analog input / 1 binary input /
+  20 counter], `tag`/`static`, `scale`, `label`) and `controls[]`
+  (**`Dnp3Control`** = `index`, `group` [12 CROB / 41 analog output], `label`).
 
 ---
 
@@ -506,11 +562,14 @@ so runtime captures never land in version control.
 - **IEC-104 points:** edit the `iec104:` block in a profile (common address,
   monitored points by IOA/tag, control IOAs, spontaneous interval) to change
   what a General Interrogation returns and which controls an attacker can try.
+- **DNP3 points:** edit the `dnp3:` block in a profile (outstation link address,
+  monitored points by index/group/tag, control points by index/group) to change
+  what a Class 0 integrity read returns and which controls an attacker can try.
 - **New protocol:** subclass `honeygas.protocols.base.Service`, register it in
   `SERVICE_TYPES` in `honeygas/main.py`, add a listener entry in the config.
-  Modbus, S7comm and IEC-104 are full emulations; DNP3 is the natural candidate
-  to promote from capture to full emulation next (see
-  `honeygas/protocols/s7comm.py` or `iec104.py` for the pattern).
+  All six shipped listeners are now full emulations; `honeygas/protocols/`
+  (`s7comm.py`, `iec104.py`, `dnp3.py`) shows the pattern, and `tcp_capture.py`
+  is the capture-only fallback for a brand-new port before you promote it.
 - **YARA tagging:** set `quarantine.enable_yara: true`, drop rules at
   `config/rules.yar`, and `pip install yara-python`.
 

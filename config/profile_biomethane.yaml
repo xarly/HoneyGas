@@ -111,5 +111,33 @@ iec104:
     - {ioa: 3002, type_id: 45, label: "Flare command"}
     - {ioa: 3003, type_id: 50, label: "CH4 setpoint (short float)"}
 
+# DNP3 outstation (SCADA master <-> RTU), TCP/20000. Mirrors the IEC-104 points.
+#   points   -> monitored data returned on a Class 0 / static read (live values):
+#               group 30 = analog input (float), 1 = binary input, 20 = counter.
+#   controls -> operable points. Every SELECT/OPERATE is audited, inventoried as
+#               evidence, and applied ONLY to the attacker's isolated session view:
+#               group 12 = CROB (relay output), 41 = analog output block.
+dnp3:
+  source_address: 1024
+  points:
+    - {index: 0, group: 30, tag: ch4_pct,             label: "CH4 purity (%)"}
+    - {index: 1, group: 30, tag: co2_pct,             label: "CO2 (%)"}
+    - {index: 2, group: 30, tag: h2s_ppm,             label: "H2S (ppm)"}
+    - {index: 3, group: 30, tag: digester1_temp_c,    label: "Digester 1 temp (C)"}
+    - {index: 4, group: 30, tag: biogas_flow_nm3h,    label: "Biogas flow (Nm3/h)"}
+    - {index: 5, group: 30, tag: injection_flow_nm3h, label: "Injection flow (Nm3/h)"}
+    - {index: 6, group: 30, tag: grid_pressure_bar,   label: "Grid pressure (bar)"}
+    - {index: 7, group: 30, tag: wobbe_index,         label: "Wobbe index (MJ/m3)"}
+    - {index: 8, group: 30, tag: compressor_speed_rpm,label: "Compressor speed (rpm)"}
+    - {index: 0, group: 1,  static: 1, label: "Plant running"}
+    - {index: 1, group: 1,  static: 1, label: "Grid injection enabled"}
+    - {index: 2, group: 1,  static: 0, label: "Flare active"}
+    - {index: 3, group: 1,  static: 0, label: "H2S high alarm"}
+    - {index: 0, group: 20, static: 8894210, label: "Injected volume (Nm3)"}
+  controls:
+    - {index: 0, group: 12, label: "Grid injection enable/disable (CROB)"}
+    - {index: 1, group: 12, label: "Flare command (CROB)"}
+    - {index: 0, group: 41, label: "CH4 setpoint (analog output)"}
+
 # No ATG in this profile; the atg_veeder listener will log/capture generically.
 atg: null

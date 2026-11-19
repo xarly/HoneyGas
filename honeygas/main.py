@@ -22,6 +22,7 @@ from .core.limits import ResourceGovernor
 from .core.quarantine import Quarantine
 from .core.sessions import SessionManager
 from .protocols.atg import AtgVeederService
+from .protocols.dnp3 import Dnp3Service
 from .protocols.http_hmi import HttpHmiService
 from .protocols.iec104 import Iec104Service
 from .protocols.modbus import ModbusService
@@ -36,6 +37,7 @@ SERVICE_TYPES = {
     "atg_veeder": AtgVeederService,
     "s7comm": S7CommService,
     "iec104": Iec104Service,
+    "dnp3": Dnp3Service,
     "tcp_capture": TcpCaptureService,
 }
 

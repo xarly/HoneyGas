@@ -81,7 +81,7 @@ listeners:
     label: "IEC 60870-5-104"
 
   - name: dnp3
-    type: tcp_capture
+    type: dnp3
     port: 20000
     enabled: true
     label: "DNP3"
