@@ -12,6 +12,8 @@ from typing import Any
 
 import yaml
 
+from .limits import ResourceLimits
+
 
 @dataclass
 class Listener:
@@ -37,6 +39,7 @@ class Config:
     enable_yara: bool
     yara_rules: Path
     session_idle_timeout: int
+    limits: ResourceLimits
     listeners: list[Listener]
     base_dir: Path
     raw: dict = field(default_factory=dict)
@@ -88,6 +91,7 @@ def load_config(path: str | Path) -> Config:
         enable_yara=bool(quar.get("enable_yara", False)),
         yara_rules=_resolve(base_dir, quar.get("yara_rules", "config/rules.yar")),
         session_idle_timeout=int(iso.get("session_idle_timeout_seconds", 1800)),
+        limits=ResourceLimits.from_dict(iso.get("limits", {})),
         listeners=listeners,
         base_dir=base_dir,
         raw=raw,

@@ -23,11 +23,7 @@ class AtgVeederService(Service):
     protocol = "atg-veeder"
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(
-            self._handle, self.ctx.config.bind_address, self.port
-        )
-        self.audit.log("service.listening", service=self.name, protocol=self.protocol,
-                       port=self.port, severity="info")
+        await self._serve(self._handle)
 
     async def _handle(self, reader, writer) -> None:
         ip, port = self.peer(writer)

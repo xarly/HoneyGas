@@ -36,6 +36,20 @@ isolation:
   # Network/host isolation is provided by docker/docker-compose.yml.
   session_idle_timeout_seconds: 1800
 
+  # Per-attacker resource quotas -- the in-process equivalent of a container's
+  # cgroup/pids limits. They stop one source IP from exhausting the shared
+  # honeypot process (connections, new-connection floods, session memory) and
+  # so degrading observation of every other attacker. 0 = unlimited.
+  # Defaults are generous so ordinary scanners are never tripped; tighten for
+  # an exposed deployment. Breaches are audited as isolation.* events.
+  limits:
+    max_connections_per_ip: 32        # concurrent connections from one source
+    max_total_connections: 512        # concurrent connections across all sources
+    connection_rate_per_minute: 240   # new connections/minute from one source
+    max_sessions: 8192                # live sessions before LRU reclaim
+    max_overlay_entries: 4096         # writable points held per session
+    max_store_entries: 256            # scratch keys held per session
+
 # Services (listeners) to expose. Disable any you do not want.
 # Ports are the ICS defaults; remap them if you prefer.
 listeners:

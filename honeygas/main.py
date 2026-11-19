@@ -18,6 +18,7 @@ import sys
 from .core.audit import AuditLogger
 from .core.config import load_config, load_profile_dict
 from .core.context import Context
+from .core.limits import ResourceGovernor
 from .core.quarantine import Quarantine
 from .core.sessions import SessionManager
 from .protocols.atg import AtgVeederService
@@ -59,7 +60,12 @@ def build_context(config_path: str, mode_override: str | None) -> Context:
         enable_yara=config.enable_yara,
         yara_rules=config.yara_rules,
     )
-    sessions = SessionManager(idle_timeout=config.session_idle_timeout)
+    governor = ResourceGovernor(config.limits)
+    sessions = SessionManager(
+        idle_timeout=config.session_idle_timeout,
+        limits=config.limits,
+        audit=audit,
+    )
     sim = build_simulator(profile, tick_seconds=config.tick_seconds)
 
     return Context(
@@ -69,6 +75,7 @@ def build_context(config_path: str, mode_override: str | None) -> Context:
         quarantine=quarantine,
         sim=sim,
         profile=profile,
+        governor=governor,
     )
 
 
@@ -102,9 +109,10 @@ async def _purge_loop(ctx: Context, stop: asyncio.Event) -> None:
             await asyncio.wait_for(stop.wait(), timeout=60.0)
         except asyncio.TimeoutError:
             removed = ctx.sessions.purge_idle()
-            if removed:
+            windows = ctx.governor.purge_rate_windows()
+            if removed or windows:
                 ctx.audit.log("sessions.purged", severity="debug",
-                              service="core", count=removed)
+                              service="core", count=removed, rate_windows=windows)
 
 
 async def run(ctx: Context) -> None:

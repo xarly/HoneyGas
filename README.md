@@ -29,6 +29,7 @@ training. It is **not** an attack tool and contains no real exploits.
   - [Protocol services](#protocol-services-honeygasprotocols)
   - [Per-attacker isolation model](#per-attacker-isolation-model)
   - [S7comm emulation detail](#s7comm-emulation-detail)
+  - [IEC-104 emulation detail](#iec-104-emulation-detail)
   - [Audit event taxonomy](#audit-event-taxonomy)
   - [Data model (profile schema)](#data-model-profile-schema)
 - [Quick start (local)](#quick-start-local)
@@ -91,7 +92,10 @@ Disable or re-port any of them in `config/honeygas.yaml`.
      `data/audit/honeygas-audit.jsonl` (`honeygas/core/audit.py`).
    - *Isolated between attackers* → `honeygas/core/sessions.py` gives each
      source IP its own copy-on-write overlay, so one attacker's writes never
-     appear in another's reads. Docker adds host/network isolation.
+     appear in another's reads, while `honeygas/core/limits.py` bounds what one
+     source may consume (connections, rate, session memory) so it cannot starve
+     the rest. Docker adds host/network isolation. See
+     [Per-attacker isolation model](#per-attacker-isolation-model).
 
 ### Safety contract — captured payloads are never executed
 
@@ -149,7 +153,8 @@ HoneyGas/
 │   │   ├── config.py            # YAML → Config/Listener dataclasses
 │   │   ├── context.py           # Context: the shared runtime bundle
 │   │   ├── audit.py             # AuditLogger: structured JSONL events
-│   │   ├── sessions.py          # SessionManager + per-attacker Session overlays
+│   │   ├── sessions.py          # SessionManager + per-attacker Session overlays (bounded, LRU-capped)
+│   │   ├── limits.py            # ResourceGovernor: per-attacker connection quotas (cgroup equivalent)
 │   │   └── quarantine.py        # Quarantine: capture/hash/type/inventory (never executes)
 │   ├── sim/
 │   │   ├── profiles.py          # typed profile model + loader
@@ -196,9 +201,10 @@ HoneyGas/
 | Module | Key types / functions | Responsibility |
 |--------|-----------------------|----------------|
 | `config.py` | `Config`, `Listener`, `load_config()`, `load_profile_dict()` | Parse the main YAML into dataclasses; resolve paths against the project root (`<root>/config/..` → `<root>`). |
-| `context.py` | `Context` | Immutable bundle (`config`, `audit`, `sessions`, `quarantine`, `sim`, `profile`) handed to every service. |
+| `context.py` | `Context` | Immutable bundle (`config`, `audit`, `sessions`, `quarantine`, `sim`, `profile`, `governor`) handed to every service. |
 | `audit.py` | `AuditLogger.log()`, `SEVERITIES` | Append one JSON object per event to the audit file; optional severity-filtered stdout echo. Severities: `debug < info < notice < warning < high < critical`. |
-| `sessions.py` | `Session`, `SessionManager.get()` / `purge_idle()` | One `Session` per `(src_ip, service)`, each with a copy-on-write `overlay`, free-form `store`, and list of `captured` ids. |
+| `sessions.py` | `Session`, `BoundedDict`, `SessionManager.get()` / `purge_idle()` | One `Session` per `(src_ip, service)`, each with a **bounded** copy-on-write `overlay`, free-form `store`, and list of `captured` ids; a global session cap with least-recently-seen reclaim. |
+| `limits.py` | `ResourceLimits`, `ResourceGovernor` | Per-attacker resource quotas (concurrent connections per-IP / total, new-connection rate) — the in-process cgroup equivalent, enforced in `Service._serve`. |
 | `quarantine.py` | `Quarantine.capture_binary()` / `capture_call()`, `CaptureRecord` | Hash (MD5/SHA1/SHA256), magic-byte type detection, de-duplicated storage as `<sha256>.quarantine` (`0o400`), append to `inventory.jsonl`, optional YARA matching. **Never executes.** |
 
 ### Simulation layer (`honeygas/sim`)
@@ -249,6 +255,75 @@ lifecycle, convenience accessors (`audit`, `sessions`, `sim`, `quarantine`,
   protocol-plausible handshake to keep scanners talking, logs `tcp.connect` /
   `tcp.data` / `tcp.close`, and captures payloads over a size threshold. It is
   the fallback pattern for protocols not yet promoted to full emulation.
+
+### Per-attacker isolation model
+
+Isolation is defence in depth across three layers, so one attacker can neither
+**see** nor **starve** another:
+
+**1. Logical state isolation (always on).** Every `(src_ip, service)` pair gets
+its own `Session` (`honeygas/core/sessions.py`). Writes — Modbus coils/registers,
+S7 DB words, IEC-104 set-points/commands — land in that session's copy-on-write
+`overlay` (or free-form `store`), never in the shared read-only baseline, so
+attacker A's tampering is invisible to attacker B. Reads resolve against the
+session overlay first, then the live simulator.
+
+**2. In-process resource isolation (the cgroup equivalent).** One asyncio
+process serves every attacker and never executes their payloads, so there is no
+code-execution surface to sandbox per attacker. The *resource* dimension still
+matters: one source must not exhaust connections, CPU or memory and so degrade
+observation of the others. `honeygas/core/limits.py` (`ResourceGovernor`)
+enforces, uniformly for every protocol in `Service._serve`:
+
+| Quota | Default | Bounds |
+|-------|---------|--------|
+| `max_connections_per_ip` | 32 | concurrent connections from one source |
+| `max_total_connections` | 512 | concurrent connections across all sources |
+| `connection_rate_per_minute` | 240 | new-connection flood from one source (sliding 60 s window) |
+| `max_sessions` | 8192 | live sessions before least-recently-seen reclaim |
+| `max_overlay_entries` / `max_store_entries` | 4096 / 256 | writable points / scratch keys per session (`BoundedDict`) |
+
+A connection refused by a quota is closed **before** its handler (and session)
+ever run, and audited as `isolation.connection_rejected`; a session reclaimed at
+the cap is audited as `isolation.session_evicted`. Defaults are generous — a
+real honeypot wants to keep engaging attackers and the bursty scanners that
+precede them, so ordinary reconnaissance is never tripped — and are tunable
+under `isolation.limits` in `config/honeygas.yaml` (`0` disables a quota).
+
+**3. Host / network isolation (deployment).** The compose stack in `docker/`
+runs the whole honeypot non-root, read-only-root, `cap_drop: ALL`,
+`no-new-privileges`, on an `internal` bridge with no egress, under a CPU/memory
+cap — so even though captures are never executed, a payload has nowhere to call
+home from.
+
+#### Hard per-source isolation (optional)
+
+For kernel-level isolation *between sources* — e.g. a research deployment that
+wants each attacker in its own network namespace — front HoneyGas with a
+per-source dispatcher rather than building it into the process. Two recipes:
+
+- **Per-source connection limiting at the host edge with nftables**, which
+  complements the in-process governor:
+
+  ```nft
+  table inet honeygas {
+    chain input {
+      type filter hook input priority 0; policy accept;
+      define ics_ports = { 102, 502, 2404, 8080, 10001, 20000 }
+      # cap concurrent connections per source IP
+      tcp dport $ics_ports ct state new ct count over 64 reject with tcp reset
+      # cap new-connection rate per source IP
+      tcp dport $ics_ports ct state new \
+        meter flood { ip saddr limit rate over 10/second } reject with tcp reset
+    }
+  }
+  ```
+
+- **Per-source network namespaces** — run one hardened HoneyGas container per
+  source class (e.g. one per `/24`, or one per allowlisted researcher), each on
+  its own `internal` compose network, and steer traffic to the right instance
+  with the host firewall or a small TCP proxy. Device state is already per-IP
+  inside each instance, so this adds a kernel boundary with **no code change**.
 
 ### S7comm emulation detail
 
@@ -325,7 +400,9 @@ Every line in `data/audit/honeygas-audit.jsonl` carries `ts`, `event_id`,
 | core | `honeygas.start` / `honeygas.stop` | notice | lifecycle |
 | core | `service.listening` | info | a listener bound its port |
 | core | `service.bind_failed` | warning | port bind failed (e.g. privileged port) |
-| core | `sessions.purged` | debug | idle sessions reclaimed |
+| core | `sessions.purged` | debug | idle sessions / rate windows reclaimed |
+| core | `isolation.connection_rejected` | warning | a per-attacker connection quota (per-IP / total / rate) refused a connection |
+| core | `isolation.session_evicted` | warning | session cap reached; least-recently-seen session reclaimed |
 | quarantine | `capture.binary` | **critical** | an injected payload/file was captured |
 | quarantine | `capture.call` | **critical** | an injected command/RPC was inventoried |
 | modbus | `modbus.connect` / `modbus.read` | notice / info | connection / register poll |

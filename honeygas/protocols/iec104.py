@@ -41,6 +41,7 @@ import asyncio
 import struct
 from datetime import datetime
 
+from ..core.sessions import BoundedDict
 from ..sim.profiles import Iec104Point
 from .base import Service
 
@@ -119,11 +120,7 @@ class Iec104Service(Service):
     protocol = "iec104"
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(
-            self._handle, self.ctx.config.bind_address, self.port
-        )
-        self.audit.log("service.listening", service=self.name,
-                       protocol=self.label or self.protocol, port=self.port, severity="info")
+        await self._serve(self._handle)
 
     # ------------------------------------------------------------- connection
     async def _handle(self, reader, writer) -> None:
@@ -297,9 +294,14 @@ class Iec104Service(Service):
             f"{name} IOA={ioa} value={value}", session=sess, service=self.name, src_ip=ip,
             meta={"via": "iec104.command", "type": name, "ioa": ioa, "label": label})
 
-        # Apply only to this attacker's isolated session view.
+        # Apply only to this attacker's isolated session view. The override
+        # bucket is bounded so an attacker cannot grow it IOA by IOA.
         if isinstance(value, (int, float)):
-            sess.store.setdefault("iec104", {})[ioa] = float(value)
+            bucket = sess.store.get("iec104")
+            if bucket is None:
+                bucket = BoundedDict(self.ctx.config.limits.max_overlay_entries)
+                sess.store["iec104"] = bucket
+            bucket[ioa] = float(value)
 
         # Mirror the information object back in the confirmations.
         clen = _CMD_LEN.get(type_id, max(len(objects), 4))

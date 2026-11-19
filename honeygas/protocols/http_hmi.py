@@ -36,11 +36,7 @@ class HttpHmiService(Service):
     protocol = "http"
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(
-            self._handle, self.ctx.config.bind_address, self.port
-        )
-        self.audit.log("service.listening", service=self.name, protocol=self.protocol,
-                       port=self.port, severity="info")
+        await self._serve(self._handle)
 
     def _server_header(self) -> str:
         v = self.profile.vendor

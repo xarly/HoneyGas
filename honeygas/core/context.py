@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from .audit import AuditLogger
 from .config import Config
+from .limits import ResourceGovernor
 from .quarantine import Quarantine
 from .sessions import SessionManager
 
@@ -17,3 +18,4 @@ class Context:
     quarantine: Quarantine
     sim: "object"      # honeygas.sim.process.ProcessSimulator
     profile: "object"  # honeygas.sim.profiles.Profile
+    governor: ResourceGovernor = None  # per-attacker connection admission control
