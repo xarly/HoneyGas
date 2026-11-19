@@ -1,0 +1,63 @@
+# HoneyGas deployment with hardening and network isolation.
+#
+# This provides the HOST/NETWORK isolation layer that complements the
+# application-level per-attacker session isolation in the code.
+#
+#   * runs as non-root, no new privileges, all Linux capabilities dropped
+#   * root filesystem is read-only; only the data volume is writable
+#   * attached to an "internal" bridge with NO route to the internet, so a
+#     captured payload has nowhere to call home from (captures are never
+#     executed anyway, but egress containment is defence in depth)
+#   * modest resource limits to blunt resource-exhaustion abuse
+#
+# Expose only the ports you intend to, and ONLY on an isolated/monitored
+# network segment you are authorized to run this on.
+
+services:
+  honeygas:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: honeygas:0.1.0
+    container_name: honeygas
+    restart: unless-stopped
+
+    # Map the ICS ports. Bind to a specific capture interface in production
+    # instead of 0.0.0.0 (shown here for convenience).
+    ports:
+      - "502:502"       # Modbus/TCP
+      - "8080:8080"     # HMI (HTTP)
+      - "10001:10001"   # Veeder-Root ATG
+      - "102:102"       # S7comm / ISO-TSAP
+      - "2404:2404"     # IEC 60870-5-104
+      - "20000:20000"   # DNP3
+
+    volumes:
+      - honeygas-data:/data
+      # Mount your config read-only so the container can't be made to rewrite it.
+      - ../config:/app/config:ro
+
+    # --- hardening ---
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - honeynet
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+
+networks:
+  honeynet:
+    driver: bridge
+    internal: true     # no outbound internet from the honeypot
+
+volumes:
+  honeygas-data:

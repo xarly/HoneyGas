@@ -1,0 +1,7 @@
+# HoneyGas runtime dependencies
+# Core runtime needs only PyYAML; everything else is Python standard library.
+PyYAML>=6.0
+
+# --- Optional (uncomment to enable richer capture analysis) ---
+# yara-python>=4.3      # enable quarantine.enable_yara for malware tagging
+# python-magic-bin>=0.4 # better file-type detection on Windows

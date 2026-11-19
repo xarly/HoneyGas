@@ -1,0 +1,73 @@
+# ============================================================================
+# HoneyGas - main configuration
+# ----------------------------------------------------------------------------
+# Defensive ICS/OT honeypot for gas transport/distribution and biomethane.
+#
+# DEPLOY ONLY in an isolated, authorized network segment that you own.
+# See README.md (sections "Safety" and "Deployment") before exposing it.
+# ============================================================================
+
+# Operating mode: selects the device/process profile to emulate.
+#   transport  -> gas transport & distribution station (RTU, flow computers, ATG)
+#   biomethane -> biomethane upgrading & grid-injection plant
+mode: transport
+
+site_name: "EDR-GAS-NODE-07"      # cosmetic identifier shown in banners/HMI
+bind_address: "0.0.0.0"           # interface to bind listeners to
+
+simulation:
+  tick_seconds: 2.0               # how often simulated process values advance
+
+logging:
+  audit_file: "data/audit/honeygas-audit.jsonl"
+  level: "INFO"
+  echo_stdout: true
+
+quarantine:
+  dir: "data/quarantine"
+  max_capture_bytes: 10485760     # 10 MiB cap per captured payload
+  enable_yara: false              # requires yara-python + a rules file
+  yara_rules: "config/rules.yar"
+
+isolation:
+  # Application-level isolation: each source IP gets its own sandboxed copy
+  # of the writable device state (an overlay on top of the shared baseline),
+  # so one attacker's writes never leak into another attacker's view.
+  # Network/host isolation is provided by docker/docker-compose.yml.
+  session_idle_timeout_seconds: 1800
+
+# Services (listeners) to expose. Disable any you do not want.
+# Ports are the ICS defaults; remap them if you prefer.
+listeners:
+  - name: modbus
+    type: modbus
+    port: 502
+    enabled: true
+
+  - name: hmi
+    type: http_hmi
+    port: 8080
+    enabled: true
+
+  - name: atg
+    type: atg_veeder
+    port: 10001
+    enabled: true
+
+  - name: s7comm
+    type: s7comm
+    port: 102
+    enabled: true
+    label: "S7comm / ISO-TSAP (Siemens S7)"
+
+  - name: iec104
+    type: tcp_capture
+    port: 2404
+    enabled: true
+    label: "IEC 60870-5-104"
+
+  - name: dnp3
+    type: tcp_capture
+    port: 20000
+    enabled: true
+    label: "DNP3"

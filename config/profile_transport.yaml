@@ -1,0 +1,86 @@
+# ============================================================================
+# Profile: Gas Transport & Distribution station
+# ----------------------------------------------------------------------------
+# Emulated assets: station RTU / flow computer, custody-transfer metering,
+# pressure regulation, odorant injection, and a Veeder-Root style ATG.
+# The firmware version advertised is deliberately dated to look exploitable.
+# ============================================================================
+
+name: "Gas Transport & Distribution"
+mode: transport
+
+vendor:
+  manufacturer: "OmniFlow Systems"
+  product: "OmniRTU-3000 Station Controller"
+  firmware: "2.3.1"                 # dated on purpose (recon lure)
+  serial: "OF3K-2019-004471"
+
+# Weak/default credentials the HMI will accept. Every login attempt is logged;
+# these are the lure that lets an attacker "get in".
+credentials:
+  - {username: "admin", password: "admin"}
+  - {username: "operator", password: "operator"}
+  - {username: "scada", password: "Scada2015!"}
+
+# Simulated process tags. kind: sine | counter | setpoint
+tags:
+  - {name: line_pressure_bar,   unit: "bar",    kind: sine,     base: 48.0,  amp: 3.5,  period: 600,  noise: 0.4, min: 0,  max: 80}
+  - {name: flow_rate_knm3h,     unit: "kNm3/h", kind: sine,     base: 125.0, amp: 18.0, period: 900,  noise: 2.0, min: 0,  max: 250}
+  - {name: gas_temperature_c,   unit: "C",      kind: sine,     base: 11.0,  amp: 2.0,  period: 3600, noise: 0.3, min: -20, max: 60}
+  - {name: custody_totalizer_m3,unit: "m3",     kind: counter,  base: 15523120.0, rate: 34.7, min: 0, max: 99999999}
+  - {name: inlet_pressure_bar,  unit: "bar",    kind: sine,     base: 55.0,  amp: 2.0,  period: 700,  noise: 0.3, min: 0,  max: 90}
+  - {name: outlet_pressure_bar, unit: "bar",    kind: sine,     base: 16.0,  amp: 1.0,  period: 500,  noise: 0.2, min: 0,  max: 40}
+  - {name: valve_position_pct,  unit: "%",      kind: setpoint, base: 72.0,  noise: 0.1, min: 0, max: 100}
+  - {name: odorant_level_pct,   unit: "%",      kind: sine,     base: 64.0,  amp: 1.5,  period: 7200, noise: 0.2, min: 0, max: 100}
+
+modbus:
+  unit: 1
+  # Read-only process values (FC2=discrete, FC4=input). scale maps float->u16.
+  input_registers:
+    0: {tag: line_pressure_bar,   scale: 10}
+    1: {tag: flow_rate_knm3h,     scale: 10}
+    2: {tag: gas_temperature_c,   scale: 10}
+    3: {tag: inlet_pressure_bar,  scale: 10}
+    4: {tag: outlet_pressure_bar, scale: 10}
+    5: {tag: odorant_level_pct,   scale: 10}
+  # Read/write setpoints (FC3/FC6/FC16). Writes land in the attacker's overlay.
+  holding_registers:
+    0: {tag: valve_position_pct,  scale: 10}
+    1: {static: 480,  label: "pressure_setpoint_x10"}
+    2: {static: 1250, label: "flow_setpoint_x10"}
+  coils:
+    0: {static: 1, label: "station_online"}
+    1: {static: 0, label: "esd_trip"}          # emergency shutdown
+    2: {static: 1, label: "main_valve_open"}
+  discrete_inputs:
+    0: {static: 1, label: "compressor_run"}
+    1: {static: 0, label: "gas_leak_alarm"}
+
+hmi:
+  title: "OmniFlow Station SCADA"
+  values:
+    - {label: "Line Pressure",     tag: line_pressure_bar,   unit: "bar"}
+    - {label: "Flow Rate",         tag: flow_rate_knm3h,     unit: "kNm3/h"}
+    - {label: "Gas Temperature",   tag: gas_temperature_c,   unit: "C"}
+    - {label: "Valve Position",    tag: valve_position_pct,  unit: "%"}
+    - {label: "Custody Totalizer", tag: custody_totalizer_m3,unit: "m3"}
+
+# Siemens S7 PLC identity returned by S7comm Read SZL (fingerprinting lure).
+# Order number + dated firmware make it look like a known-vulnerable S7-300.
+s7:
+  order_number: "6ES7 315-2EH14-0AB0"
+  basic_hardware: "6ES7 315-2EH14-0AB0"
+  firmware: "V3.2.6"
+  module_type: "CPU 315-2 PN/DP"
+  system_name: "GASNODE07_S7"
+  serial: "S C-C2UR28922017"
+  copyright: "Original Siemens Equipment"
+  plant_id: "DISTRIB-STATION-07"
+  pdu_size: 480
+
+# Veeder-Root style Automatic Tank Gauge (odorant / condensate tanks).
+atg:
+  station: "DISTRIBUTION STATION 07"
+  tanks:
+    - {num: 1, product: "ODORANT THT",  volume: 7421.0, tc_volume: 7380.0, ullage: 2579.0, height: 48.21, water: 0.0, temp: 12.4}
+    - {num: 2, product: "CONDENSATE",   volume: 1560.0, tc_volume: 1551.0, ullage: 8440.0, height: 11.02, water: 1.2, temp: 11.8}

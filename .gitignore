@@ -1,0 +1,16 @@
+# Runtime data (audit logs + captured/quarantined artifacts)
+data/audit/*.jsonl
+data/quarantine/*
+!data/quarantine/.gitkeep
+!data/audit/.gitkeep
+
+# Local/test configs
+config/*.test.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/

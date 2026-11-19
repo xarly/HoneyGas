@@ -1,0 +1,87 @@
+# ============================================================================
+# Profile: Biomethane Upgrading & Grid-Injection plant
+# ----------------------------------------------------------------------------
+# Emulated assets: anaerobic digester, gas upgrading (membrane/PSA),
+# compressor, gas-quality analyzer (CH4/CO2/H2S/Wobbe), grid injection.
+# ============================================================================
+
+name: "Biomethane Upgrading Plant"
+mode: biomethane
+
+vendor:
+  manufacturer: "BioGridTech"
+  product: "BGT BioUpgrade PLC-500"
+  firmware: "1.4.7"
+  serial: "BGT500-2020-001287"
+
+credentials:
+  - {username: "admin", password: "admin"}
+  - {username: "plant", password: "biogas"}
+  - {username: "maint", password: "1234"}
+
+tags:
+  - {name: ch4_pct,              unit: "%",      kind: sine,     base: 96.8,  amp: 0.6,  period: 1200, noise: 0.15, min: 0, max: 100}
+  - {name: co2_pct,              unit: "%",      kind: sine,     base: 2.1,   amp: 0.3,  period: 1200, noise: 0.10, min: 0, max: 100}
+  - {name: h2s_ppm,              unit: "ppm",    kind: sine,     base: 3.5,   amp: 1.5,  period: 800,  noise: 0.50, min: 0, max: 500}
+  - {name: digester1_temp_c,     unit: "C",      kind: sine,     base: 38.5,  amp: 0.4,  period: 3600, noise: 0.10, min: 0, max: 70}
+  - {name: digester1_ph,         unit: "pH",     kind: sine,     base: 7.4,   amp: 0.1,  period: 5400, noise: 0.03, min: 0, max: 14}
+  - {name: biogas_flow_nm3h,     unit: "Nm3/h",  kind: sine,     base: 540.0, amp: 40.0, period: 900,  noise: 6.0,  min: 0, max: 1000}
+  - {name: upgrade_pressure_bar, unit: "bar",    kind: sine,     base: 8.0,   amp: 0.3,  period: 600,  noise: 0.05, min: 0, max: 20}
+  - {name: injection_flow_nm3h,  unit: "Nm3/h",  kind: sine,     base: 300.0, amp: 20.0, period: 900,  noise: 3.0,  min: 0, max: 600}
+  - {name: grid_pressure_bar,    unit: "bar",    kind: sine,     base: 16.0,  amp: 0.4,  period: 700,  noise: 0.08, min: 0, max: 40}
+  - {name: wobbe_index,          unit: "MJ/m3",  kind: sine,     base: 51.2,  amp: 0.5,  period: 1800, noise: 0.10, min: 0, max: 60}
+  - {name: compressor_speed_rpm, unit: "rpm",    kind: setpoint, base: 2950.0, noise: 1.0, min: 0, max: 4000}
+
+modbus:
+  unit: 1
+  input_registers:
+    0: {tag: ch4_pct,            scale: 100}
+    1: {tag: co2_pct,            scale: 100}
+    2: {tag: h2s_ppm,            scale: 10}
+    3: {tag: digester1_temp_c,   scale: 10}
+    4: {tag: digester1_ph,       scale: 100}
+    5: {tag: biogas_flow_nm3h,   scale: 10}
+    6: {tag: injection_flow_nm3h,scale: 10}
+    7: {tag: grid_pressure_bar,  scale: 100}
+    8: {tag: wobbe_index,        scale: 100}
+  holding_registers:
+    0: {tag: compressor_speed_rpm, scale: 1}
+    1: {tag: upgrade_pressure_bar, scale: 100}
+    2: {static: 9680, label: "ch4_setpoint_x100"}
+  coils:
+    0: {static: 1, label: "plant_running"}
+    1: {static: 1, label: "grid_injection_enabled"}
+    2: {static: 0, label: "flare_active"}
+    3: {static: 0, label: "emergency_stop"}
+  discrete_inputs:
+    0: {static: 1, label: "digester_mixer_run"}
+    1: {static: 0, label: "h2s_high_alarm"}
+    2: {static: 1, label: "gas_quality_ok"}
+
+hmi:
+  title: "BioGridTech Plant Control"
+  values:
+    - {label: "CH4 Purity",       tag: ch4_pct,             unit: "%"}
+    - {label: "CO2",              tag: co2_pct,             unit: "%"}
+    - {label: "H2S",              tag: h2s_ppm,             unit: "ppm"}
+    - {label: "Digester 1 Temp",  tag: digester1_temp_c,    unit: "C"}
+    - {label: "Biogas Flow",      tag: biogas_flow_nm3h,    unit: "Nm3/h"}
+    - {label: "Grid Injection",   tag: injection_flow_nm3h, unit: "Nm3/h"}
+    - {label: "Wobbe Index",      tag: wobbe_index,         unit: "MJ/m3"}
+    - {label: "Compressor Speed", tag: compressor_speed_rpm,unit: "rpm"}
+
+# Siemens S7 PLC identity returned by S7comm Read SZL (fingerprinting lure).
+# Presents as an S7-1500 class controller with dated firmware.
+s7:
+  order_number: "6ES7 1512-1AK01-0AB0"
+  basic_hardware: "6ES7 1512-1AK01-0AB0"
+  firmware: "V2.6.1"
+  module_type: "CPU 1512C-1 PN"
+  system_name: "BIOUPGRADE_PLC"
+  serial: "S C-K5LN71892020"
+  copyright: "Original Siemens Equipment"
+  plant_id: "BIOMETHANE-PLANT-01"
+  pdu_size: 480
+
+# No ATG in this profile; the atg_veeder listener will log/capture generically.
+atg: null
