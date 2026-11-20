@@ -1,0 +1,47 @@
+# PLANTA BIOMETANO VM - runs ONLY the biomethane instance. Deploy on its own
+# VM/IP, on a different address range from the gaseoducto VM.
+#   docker compose -f docker/compose.biomethane.yml up --build -d
+# Reset/clean after compromise: docker/rebuild.sh (see docs/deployment-wazuh.md).
+
+services:
+  honeygas:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: honeygas:0.1.0
+    container_name: honeygas-biomethane
+    entrypoint: ["python", "-m", "honeygas", "--config", "config/honeygas.biomethane.yaml"]
+    restart: unless-stopped
+
+    # No ATG (10001) on a biomethane plant.
+    ports:
+      - "502:502"       # Modbus/TCP
+      - "8080:8080"     # HMI (HTTP)
+      - "102:102"       # S7comm / ISO-TSAP
+      - "2404:2404"     # IEC 60870-5-104
+      - "20000:20000"   # DNP3
+
+    volumes:
+      - /opt/honeygas/data:/data
+      - ../config:/app/config:ro
+
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - honeynet
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+
+networks:
+  honeynet:
+    driver: bridge
+    internal: true

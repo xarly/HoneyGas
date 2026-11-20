@@ -1,0 +1,19 @@
+<!--
+  OPTIONAL: direct CEF syslog receiver on the Wazuh manager.
+
+  Only needed if you enable HoneyGas's built-in CEF alert sink (alerts.enabled:
+  true in the instance config) AND relax the egress firewall to allow exactly
+  honeypot -> Wazuh:514. By default the honeypot container has no egress and the
+  host agent (agent-ossec.conf) is the telemetry path, so you do NOT need this.
+
+  Merge into /var/ossec/etc/ossec.conf and restart wazuh-manager. Wazuh ships a
+  CEF decoder, so the forwarded events are parsed into fields on arrival.
+-->
+<ossec_config>
+  <remote>
+    <connection>syslog</connection>
+    <port>514</port>
+    <protocol>udp</protocol>
+    <allowed-ips>10.10.0.0/24</allowed-ips>   <!-- the DMZ subnet(s) only -->
+  </remote>
+</ossec_config>

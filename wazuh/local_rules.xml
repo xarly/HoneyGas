@@ -1,0 +1,70 @@
+<!--
+  HoneyGas detection rules for Wazuh.
+  Drop into the manager at /var/ossec/etc/rules/local_rules.xml and restart
+  wazuh-manager. The audit JSONL is decoded natively (decoded_as json), so
+  every field (event, severity, site, src_ip, sha256, ...) is addressable.
+
+  A honeypot has no legitimate users, so EVERY event is already suspicious;
+  these rules escalate by our own `severity` and flag cross-site recon. Rule
+  ids are in the local range (100000+). MITRE ATT&CK for ICS ids are
+  illustrative; tune to your environment and Wazuh version.
+-->
+<group name="honeygas,ics,">
+
+  <!-- Base: any HoneyGas event. -->
+  <rule id="100200" level="5">
+    <decoded_as>json</decoded_as>
+    <field name="event">^(modbus|s7|iec104|dnp3|http|atg|tcp|capture|isolation|sessions|service|honeygas|alert)\.</field>
+    <description>HoneyGas [$(site)]: $(event) from $(src_ip)</description>
+  </rule>
+
+  <!-- Connections / recon: notice-level events (a hit on a honeypot = recon). -->
+  <rule id="100205" level="6">
+    <if_sid>100200</if_sid>
+    <field name="event">\.connect$|\.probe$|\.read_szl$|\.interrogation$|link_status</field>
+    <description>HoneyGas [$(site)]: reconnaissance - $(event) from $(src_ip)</description>
+    <mitre><id>T0846</id></mitre>
+  </rule>
+
+  <!-- Control tampering / credential use. -->
+  <rule id="100210" level="12">
+    <if_sid>100200</if_sid>
+    <field name="severity">high</field>
+    <description>HoneyGas [$(site)] HIGH: control/credential event $(event) from $(src_ip)</description>
+    <mitre><id>T0855</id></mitre>
+  </rule>
+
+  <!-- Most serious: PLC stop/start, restart, captured payloads. -->
+  <rule id="100220" level="14">
+    <if_sid>100200</if_sid>
+    <field name="severity">critical</field>
+    <description>HoneyGas [$(site)] CRITICAL: $(event) from $(src_ip)</description>
+    <mitre><id>T0831</id></mitre>
+  </rule>
+
+  <!-- Captured artifact (hash is in the event; sample stays quarantined off-SIEM). -->
+  <rule id="100230" level="14">
+    <if_sid>100200</if_sid>
+    <field name="event">^capture\.</field>
+    <description>HoneyGas [$(site)]: attacker artifact captured (type $(file_type), sha256 $(sha256))</description>
+    <mitre><id>T0853</id></mitre>
+  </rule>
+
+  <!-- Per-attacker resource quota tripped (flood / abuse). -->
+  <rule id="100240" level="8">
+    <if_sid>100200</if_sid>
+    <field name="event">^isolation\.</field>
+    <description>HoneyGas [$(site)]: resource quota - $(event) from $(src_ip)</description>
+  </rule>
+
+  <!-- Cross-site: one source touching MULTIPLE sites within an hour = targeted
+       reconnaissance against the operator, not internet background noise. -->
+  <rule id="100250" level="13" frequency="2" timeframe="3600">
+    <if_matched_sid>100200</if_matched_sid>
+    <same_source_ip />
+    <different_field>site</different_field>
+    <description>HoneyGas: source $(src_ip) touched multiple sites - targeted recon</description>
+    <mitre><id>T0846</id></mitre>
+  </rule>
+
+</group>

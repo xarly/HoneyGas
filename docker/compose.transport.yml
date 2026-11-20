@@ -1,0 +1,55 @@
+# GASEODUCTO VM - runs ONLY the transport instance. Deploy on its own VM/IP.
+#   docker compose -f docker/compose.transport.yml up --build -d
+# Reset/clean after compromise: docker/rebuild.sh (see docs/deployment-wazuh.md).
+#
+# Telemetry: the container has NO egress (honeynet is internal). The host-based
+# Wazuh agent tails the bind-mounted /opt/honeygas/data and ships to the SIEM.
+
+services:
+  honeygas:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: honeygas:0.1.0
+    container_name: honeygas-transport
+    entrypoint: ["python", "-m", "honeygas", "--config", "config/honeygas.transport.yaml"]
+    restart: unless-stopped
+
+    # Standard ICS ports on this VM's own IP (no remapping: scanners expect them here).
+    ports:
+      - "502:502"       # Modbus/TCP
+      - "8080:8080"     # HMI (HTTP)
+      - "10001:10001"   # Veeder-Root ATG
+      - "102:102"       # S7comm / ISO-TSAP
+      - "2404:2404"     # IEC 60870-5-104
+      - "20000:20000"   # DNP3
+
+    volumes:
+      # Bind mount (not a named volume) so the host Wazuh agent can tail it and
+      # rebuild.sh can snapshot/clear it. Must be owned by uid 10001.
+      - /opt/honeygas/data:/data
+      - ../config:/app/config:ro
+
+    # --- hardening (identical to the single-instance stack) ---
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - honeynet
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+
+networks:
+  honeynet:
+    driver: bridge
+    internal: true     # no outbound from the honeypot: a captured payload cannot call home
+
+# No named volume: /data is a host bind mount (see volumes above).
