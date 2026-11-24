@@ -184,6 +184,7 @@ HoneyGas/
 │   └── cloud-init/              # per-VM user-data (gaseoducto / biometano / wazuh / tpot)
 ├── wazuh/                       # Wazuh drop-ins: rules, host-agent config, CEF receiver
 ├── docs/
+│   ├── index.html               # self-contained HTML documentation (diagrams, light/dark)
 │   └── deployment-wazuh.md      # two-site cloud deployment + Wazuh ingestion guide
 ├── data/
 │   ├── audit/                   # audit JSONL output (git-ignored)
