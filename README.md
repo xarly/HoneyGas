@@ -146,6 +146,8 @@ isolation live in the shared core.
 HoneyGas/
 ├── config/
 │   ├── honeygas.yaml            # main config: mode, listeners, logging, quarantine, isolation
+│   ├── honeygas.transport.yaml  # deployment: gaseoducto instance (own VM)
+│   ├── honeygas.biomethane.yaml # deployment: biometano instance (own VM)
 │   ├── profile_transport.yaml   # transport/distribution station profile (data only)
 │   └── profile_biomethane.yaml  # biomethane upgrading plant profile (data only)
 ├── honeygas/
@@ -173,7 +175,13 @@ HoneyGas/
 │       └── tcp_capture.py       # generic capture fallback (no listener wired by default)
 ├── docker/
 │   ├── Dockerfile               # non-root, slim runtime image
-│   └── docker-compose.yml       # hardened stack (read-only, cap_drop, internal net)
+│   ├── docker-compose.yml       # hardened single-instance stack
+│   ├── compose.transport.yml    # two-site deploy: gaseoducto VM
+│   ├── compose.biomethane.yml   # two-site deploy: biometano VM
+│   └── rebuild.sh               # container-level reset/clean after compromise
+├── wazuh/                       # Wazuh drop-ins: rules, host-agent config, CEF receiver
+├── docs/
+│   └── deployment-wazuh.md      # two-site cloud deployment + Wazuh ingestion guide
 ├── data/
 │   ├── audit/                   # audit JSONL output (git-ignored)
 │   └── quarantine/              # captured artifacts + inventory.jsonl (git-ignored)
@@ -566,6 +574,8 @@ cat data/quarantine/inventory.jsonl
 
 ## Deployment (Docker, recommended)
 
+### Single instance (all-in-one)
+
 ```bash
 cd docker
 docker compose up --build -d
@@ -577,6 +587,23 @@ filesystem, all capabilities dropped, `no-new-privileges`, resource-limited, and
 on an **internal** network with no outbound internet — defence-in-depth around a
 service that is meant to be attacked. Captured data persists on the
 `honeygas-data` volume.
+
+### Two-site cloud deployment with Wazuh
+
+To run a **gaseoducto (transport)** and a **biometano (biomethane)** site as two
+independent cloud VMs feeding a **Wazuh** SIEM on a separate private network, see
+**[docs/deployment-wazuh.md](docs/deployment-wazuh.md)**. That guide covers the
+network topology and one-way-telemetry firewall model, the per-site instance
+configs, Wazuh ingestion (native JSON + optional CEF) with cross-site
+correlation, believability of the two sites, and **how/when the environment is
+reset after a compromise**. Ready-to-use artifacts:
+
+| Path | Role |
+|------|------|
+| [`config/honeygas.transport.yaml`](config/honeygas.transport.yaml) / [`config/honeygas.biomethane.yaml`](config/honeygas.biomethane.yaml) | per-site instance configs |
+| [`docker/compose.transport.yml`](docker/compose.transport.yml) / [`docker/compose.biomethane.yml`](docker/compose.biomethane.yml) | one hardened stack per VM |
+| [`docker/rebuild.sh`](docker/rebuild.sh) | container-level reset/clean |
+| [`wazuh/`](wazuh/) | detection rules, host-agent config, optional CEF receiver |
 
 ## Data outputs
 
