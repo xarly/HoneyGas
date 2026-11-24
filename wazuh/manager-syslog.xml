@@ -5,6 +5,9 @@
   true in the instance config) AND relax the egress firewall to allow exactly
   honeypot -> Wazuh:514. By default the honeypot container has no egress and the
   host agent (agent-ossec.conf) is the telemetry path, so you do NOT need this.
+  In the multi-provider topology the honeypots reach the hub through the
+  WireGuard overlay (10.99.0.11 / 10.99.0.12); also allow udp/514 from them in
+  deploy/wazuh-hub-firewall.sh.
 
   Merge into /var/ossec/etc/ossec.conf and restart wazuh-manager. Wazuh ships a
   CEF decoder, so the forwarded events are parsed into fields on arrival.
@@ -14,6 +17,7 @@
     <connection>syslog</connection>
     <port>514</port>
     <protocol>udp</protocol>
-    <allowed-ips>10.10.0.0/24</allowed-ips>   <!-- the DMZ subnet(s) only -->
+    <allowed-ips>10.99.0.11</allowed-ips>   <!-- VM-A gaseoducto (overlay) -->
+    <allowed-ips>10.99.0.12</allowed-ips>   <!-- VM-B biometano (overlay) -->
   </remote>
 </ossec_config>

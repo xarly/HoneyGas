@@ -37,6 +37,8 @@ training. It is **not** an attack tool and contains no real exploits.
   - [Data model (profile schema)](#data-model-profile-schema)
 - [Quick start (local)](#quick-start-local)
 - [Deployment (Docker)](#deployment-docker-recommended)
+  - [Two-site cloud deployment with Wazuh](#two-site-cloud-deployment-with-wazuh)
+  - [Management overlay (WireGuard / Tailscale)](#management-overlay-wireguard--tailscale)
 - [Data outputs](#data-outputs)
 - [Extending](#extending)
 - [Legal & ethical use](#legal--ethical-use)
@@ -184,7 +186,12 @@ HoneyGas/
 │   └── rebuild.sh               # container-level reset/clean after compromise
 ├── deploy/
 │   ├── provision.sh             # all-in-one Debian provisioner (asks the machine's mission)
-│   └── cloud-init/              # per-VM user-data (gaseoducto / biometano / wazuh / tpot)
+│   ├── cloud-init/              # per-VM user-data (gaseoducto / biometano / wazuh / tpot)
+│   ├── nftables-honeypot.nft    # honeypot host firewall: bait in, overlay-only egress, tripwire
+│   ├── wazuh-hub-firewall.sh    # hub host firewall (WireGuard or Tailscale mode)
+│   ├── wg-*.conf.example        # WireGuard overlay templates (hub / honeypot / admin)
+│   ├── tailscale-policy.hujson  # Tailscale option: tailnet access policy
+│   └── tailscaled-egress.conf   # Tailscale option: systemd drop-in (only tailscaled gets out)
 ├── wazuh/                       # Wazuh drop-ins: rules, host-agent config, CEF receiver
 ├── docs/
 │   ├── index.html               # self-contained HTML documentation (diagrams, light/dark)
@@ -637,20 +644,77 @@ service that is meant to be attacked. Captured data persists on the
 ### Two-site cloud deployment with Wazuh
 
 To run a **gaseoducto (transport)** and a **biometano (biomethane)** site as two
-independent cloud VMs feeding a **Wazuh** SIEM on a separate private network, see
-**[docs/deployment-wazuh.md](docs/deployment-wazuh.md)**. That guide covers the
-network topology and one-way-telemetry firewall model, the per-site instance
-configs, Wazuh ingestion (native JSON + optional CEF) with cross-site
-correlation, believability of the two sites, **how/when the environment is reset after a
-compromise**, distributed multi-cloud networking, and post-deploy validation.
-Ready-to-use artifacts:
+independent cloud VMs at different providers, feeding a **Wazuh** SIEM over a
+management overlay (plain WireGuard or Tailscale; summary below), see
+**[docs/deployment-wazuh.md](docs/deployment-wazuh.md)**. That guide covers
+sizing and hosting choices (the cheapest layout puts Wazuh on a cloud free
+tier and each honeypot on the smallest VPS plan of a different provider), the
+network topology and one-way-telemetry firewall model, an egress tripwire for
+breakout detection, the all-in-one provisioner, the per-site instance configs,
+Wazuh ingestion (native JSON + optional CEF) with cross-site correlation,
+believability of the two sites, **how/when the environment is reset after a
+compromise**, the optional T-Pot sensor, and post-deploy validation. An HTML
+version with diagrams is at [docs/index.html](docs/index.html). Ready-to-use
+artifacts:
 
 | Path | Role |
 |------|------|
+| [`deploy/provision.sh`](deploy/provision.sh) / [`deploy/cloud-init/`](deploy/cloud-init/) | all-in-one provisioner and per-VM user-data |
 | [`config/honeygas.transport.yaml`](config/honeygas.transport.yaml) / [`config/honeygas.biomethane.yaml`](config/honeygas.biomethane.yaml) | per-site instance configs |
 | [`docker/compose.transport.yml`](docker/compose.transport.yml) / [`docker/compose.biomethane.yml`](docker/compose.biomethane.yml) | one hardened stack per VM |
 | [`docker/rebuild.sh`](docker/rebuild.sh) | container-level reset/clean |
-| [`wazuh/`](wazuh/) | detection rules, host-agent config, optional CEF receiver |
+| [`deploy/nftables-honeypot.nft`](deploy/nftables-honeypot.nft) / [`deploy/wazuh-hub-firewall.sh`](deploy/wazuh-hub-firewall.sh) | honeypot and hub host firewalls for the overlay |
+| [`deploy/wg-*.conf.example`](deploy/) | WireGuard overlay templates (hub / honeypot / admin) |
+| [`deploy/tailscale-policy.hujson`](deploy/tailscale-policy.hujson) / [`deploy/tailscaled-egress.conf`](deploy/tailscaled-egress.conf) | Tailscale option: tailnet policy and egress drop-in |
+| [`wazuh/`](wazuh/) | detection rules (incl. T-Pot and the egress tripwire), host-agent config, optional CEF receiver |
+
+### Management overlay (WireGuard / Tailscale)
+
+The sites live at different providers, so there is no shared private subnet
+between them and the SIEM. A **management overlay** takes its place: every
+honeypot dials the Wazuh hub over an encrypted tunnel, and all telemetry and
+administration runs inside it. Nothing management-related is exposed on the
+honeypots' public IPs.
+
+```
+  provider 1               provider 2               provider 3
+  VM-A gaseoducto          VM-B biometano           Wazuh hub
+  (bait ports only)        (bait ports only)        (no inbound but the overlay)
+        │                        │                        ▲
+        └──────── overlay: honeypot → hub 1514/1515 + NTP only ───────┘
+                    hub never dials the honeypots · admin via overlay
+```
+
+What stays the same with either overlay:
+
+- **One-way telemetry.** Inside the tunnel, a honeypot reaches only the hub's
+  agent ports (1514 events, 1515 enrolment) and NTP. The hub never opens a
+  connection to a honeypot; honeypots never reach each other or the admin.
+- **Egress-locked honeypots.** The host firewall
+  ([`deploy/nftables-honeypot.nft`](deploy/nftables-honeypot.nft)) lets out only
+  the overlay's own transport. Every other outbound packet is logged
+  (`HONEYGAS-EGRESS-DENY`) and counted; the Wazuh agent polls the counter and
+  rule **100260** fires when it moves (breakout / call-home tripwire, also on
+  firewall tampering).
+- **No public SSH.** Admins reach the hub (dashboard, SSH) and the honeypots
+  (SSH) only through the overlay. The hub's own firewall is
+  [`deploy/wazuh-hub-firewall.sh`](deploy/wazuh-hub-firewall.sh).
+
+How the two options differ:
+
+| | Plain WireGuard (default) | Tailscale |
+|---|---|---|
+| Addressing | `10.99.0.0/24`, static (hub `.1`, sites `.11`/`.12`, admin `.100`) | 100.x tailnet addresses |
+| Hub exposure | `udp/51820`, silent to unauthenticated packets | none |
+| Access rules | host firewalls | tailnet policy ([`tailscale-policy.hujson`](deploy/tailscale-policy.hujson)) **and** host firewalls |
+| Honeypot egress | one destination (hub IP, `udp/51820`) | one process: `tailscaled`, matched by its cgroup ([`tailscaled-egress.conf`](deploy/tailscaled-egress.conf)) |
+| Keys / revocation | by hand, per peer | auth keys; remove the device in the admin console |
+| Third party | none | coordination service sees node metadata, not traffic |
+
+Tailscale nodes run with `--accept-dns=false` (no DNS exfiltration through
+`tailscaled`) and `--netfilter-mode=off` (the host firewalls stay in charge).
+After every reload of the honeypot firewall, restart `tailscaled`. Step-by-step
+instructions: §3–§5 of the guide for WireGuard, §8 for Tailscale.
 
 ## Data outputs
 

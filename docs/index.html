@@ -122,7 +122,7 @@ footer{border-top:1px solid var(--border);padding-block:24px;color:var(--fg-fain
       <a href="#aislamiento">Aislamiento</a>
       <a href="#control">Control</a>
       <a href="#despliegue">Despliegue</a>
-      <a href="#multicloud">Multi-cloud</a>
+      <a href="#multicloud">Overlay</a>
       <a href="#telemetria">Telemetría</a>
       <a href="#reinicio">Reinicio</a>
       <a href="#tpot">T-Pot</a>
@@ -303,14 +303,17 @@ footer{border-top:1px solid var(--border);padding-block:24px;color:var(--fg-fain
 <section id="despliegue">
   <h2><span class="n">05</span>Despliegue: dos sitios + Wazuh</h2>
   <p>El gaseoducto y la planta van en <b>VMs separadas, cada una con su IP</b>
-  (un mismo IP sirviendo ambos sería un tell evidente). Alimentan un Wazuh en
-  una subred de gestión privada. El valor de separar está en el firewall, que
-  hace la telemetría prácticamente unidireccional.</p>
+  (un mismo IP sirviendo ambos sería un tell evidente), idealmente en
+  proveedores distintos. Alimentan un hub Wazuh en un tercer proveedor a través
+  de un <b>overlay de gestión cifrado</b> (WireGuard o Tailscale, ver
+  <a href="#multicloud">06</a>), que hace de subred de gestión privada. El valor
+  de separar está en el firewall, que hace la telemetría prácticamente
+  unidireccional.</p>
   <figure>
     <div class="scroll">
       <svg class="diagram" viewBox="0 0 720 300" role="img" aria-label="Topología: dos honeypots en DMZ envían a Wazuh en gestión">
         <rect class="d-dmz" x="8" y="40" width="300" height="210" rx="12"/>
-        <text class="d-tb" x="24" y="64">Subred DMZ (sacrificial)</text>
+        <text class="d-tb" x="24" y="64">Honeypots (sacrificiales)</text>
         <text class="d-ts" x="24" y="82">expone ICS · egress bloqueado</text>
         <rect class="d-box" x="28" y="100" width="260" height="56" rx="8"/>
         <text class="d-tb" x="40" y="124">VM-A · gaseoducto</text>
@@ -320,17 +323,17 @@ footer{border-top:1px solid var(--border);padding-block:24px;color:var(--fg-fain
         <text class="d-ts" x="40" y="212">perfil biomethane</text>
 
         <line class="d-line-acc" x1="308" y1="150" x2="410" y2="150" marker-end="url(#ar2)"/>
-        <text class="d-mono" x="360" y="140" text-anchor="middle">1514/tcp</text>
+        <text class="d-mono" x="360" y="140" text-anchor="middle">1514 · overlay</text>
 
         <rect class="d-safe" x="410" y="60" width="240" height="150" rx="12"/>
-        <text class="d-tb" x="426" y="84">Subred gestión (privada)</text>
-        <text class="d-ts" x="426" y="102">sin entrada de internet</text>
+        <text class="d-tb" x="426" y="84">Hub Wazuh (gestión)</text>
+        <text class="d-ts" x="426" y="102">sin puertos de gestión públicos</text>
         <rect class="d-box" x="430" y="120" width="200" height="70" rx="8"/>
         <text class="d-tb" x="530" y="150" text-anchor="middle">Wazuh</text>
         <text class="d-ts" x="530" y="168" text-anchor="middle">manager · indexer · dashboard</text>
 
         <rect class="d-box" x="470" y="248" width="120" height="40" rx="8"/>
-        <text class="d-t" x="530" y="272" text-anchor="middle">Admin · bastión</text>
+        <text class="d-t" x="530" y="272" text-anchor="middle">Admin · overlay</text>
         <line class="d-line" x1="530" y1="248" x2="530" y2="210" marker-end="url(#ar2)" stroke-dasharray="4 4"/>
         <defs>
           <marker id="ar2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -339,8 +342,8 @@ footer{border-top:1px solid var(--border);padding-block:24px;color:var(--fg-fain
         </defs>
       </svg>
     </div>
-    <figcaption>Único camino permitido: honeypot → Wazuh:1514. Wazuh nunca
-    inicia hacia la caja sacrificial.</figcaption>
+    <figcaption>Único camino permitido: honeypot → Wazuh (1514/1515 y NTP) por
+    el overlay. Wazuh nunca inicia hacia la caja sacrificial.</figcaption>
   </figure>
   <div class="scroll">
     <table>
@@ -348,10 +351,12 @@ footer{border-top:1px solid var(--border);padding-block:24px;color:var(--fg-fain
       <thead><tr><th>Origen → destino</th><th>Puertos</th><th>Acción</th></tr></thead>
       <tbody>
         <tr><td>Internet → honeypots</td><td><code>502,102,2404,20000,8080,10001</code></td><td>permitir (el cebo)</td></tr>
-        <tr><td>Honeypots → Wazuh</td><td><code>1514/tcp</code></td><td><b>permitir — único egress</b></td></tr>
-        <tr><td>Honeypots → resto</td><td>—</td><td><b>denegar</b> (sin C2, sin pivote)</td></tr>
-        <tr><td>Wazuh → honeypots</td><td>—</td><td><b>denegar</b></td></tr>
-        <tr><td>Admin → dashboard</td><td><code>443</code></td><td>solo desde bastión/VPN</td></tr>
+        <tr><td>Internet → honeypots</td><td>el resto, incluido SSH</td><td><b>denegar</b></td></tr>
+        <tr><td>Honeypots → hub, por el overlay</td><td><code>1514/tcp</code> <code>1515/tcp</code> <code>123/udp</code></td><td><b>permitir — único egress</b></td></tr>
+        <tr><td>Honeypots → resto</td><td>—</td><td><b>denegar y contar</b> (regla <code>100260</code>)</td></tr>
+        <tr><td>Honeypot ↔ honeypot</td><td>—</td><td><b>denegar</b> (sin pivote)</td></tr>
+        <tr><td>Hub → honeypots</td><td>—</td><td><b>denegar</b></td></tr>
+        <tr><td>Admin → hub / honeypots</td><td><code>443</code> <code>22</code></td><td>solo por el overlay</td></tr>
       </tbody>
     </table>
   </div>
@@ -359,39 +364,130 @@ footer{border-top:1px solid var(--border);padding-block:24px;color:var(--fg-fain
   lee el JSON de auditoría (traza completa, decodificada nativamente) y el
   inventario de cuarentena. El contenedor no tiene egress; el agente es el
   único que habla con el SIEM. Aprovisionado con <code>deploy/provision.sh</code>
-  (pregunta la misión) y los <code>cloud-init</code> por VM.</p>
+  (pregunta la misión) y los <code>cloud-init</code> por VM. En el diseño con
+  overlay, el firewall ufw del provisioner se sustituye por los firewalls de
+  <code>deploy/</code> (ver <a href="#multicloud">06</a>).</p>
 </section>
 
 <section id="multicloud">
-  <h2><span class="n">06</span>Distribución multi-cloud</h2>
-  <p>Repartir los sitios entre nubes distintas da ASN y rangos realmente
-  diferentes (refuerza la credibilidad) y aísla el radio de fallo. El modelo no
-  cambia; solo la capa de red, porque el camino honeypot→Wazuh cruza fronteras
-  de nube.</p>
+  <h2><span class="n">06</span>Multi-cloud: overlay WireGuard / Tailscale</h2>
+  <p>Repartir los sitios entre proveedores distintos da ASN y rangos realmente
+  diferentes (refuerza la credibilidad) y aísla el radio de fallo. Pero entonces
+  no hay una subred privada común entre los honeypots y el SIEM. La sustituye un
+  <b>overlay de gestión</b>: cada honeypot marca hacia el hub Wazuh por un túnel
+  cifrado, y toda la telemetría y la administración van dentro. En las IPs
+  públicas de los honeypots no queda nada de gestión expuesto.</p>
   <figure>
     <div class="scroll">
-      <svg class="diagram" viewBox="0 0 720 220" role="img" aria-label="Tres nubes conectadas a Wazuh por una malla overlay">
-        <rect class="d-dmz" x="12" y="30" width="150" height="70" rx="12"/>
-        <text class="d-tb" x="87" y="58" text-anchor="middle">Nube A</text>
-        <text class="d-ts" x="87" y="76" text-anchor="middle">gaseoducto</text>
-        <rect class="d-dmz" x="285" y="30" width="150" height="70" rx="12"/>
-        <text class="d-tb" x="360" y="58" text-anchor="middle">Nube B</text>
-        <text class="d-ts" x="360" y="76" text-anchor="middle">biometano</text>
-        <rect class="d-safe" x="558" y="30" width="150" height="70" rx="12"/>
-        <text class="d-tb" x="633" y="58" text-anchor="middle">Nube C</text>
-        <text class="d-ts" x="633" y="76" text-anchor="middle">Wazuh (privado)</text>
-        <line class="d-line-acc" x1="87" y1="100" x2="87" y2="160"/>
-        <line class="d-line-acc" x1="360" y1="100" x2="360" y2="160"/>
-        <line class="d-line-acc" x1="633" y1="100" x2="633" y2="160"/>
-        <line class="d-line-acc" x1="87" y1="160" x2="633" y2="160"/>
-        <rect class="d-acc" x="250" y="172" width="220" height="34" rx="8"/>
-        <text class="d-t" x="360" y="194" text-anchor="middle">malla overlay (WireGuard / Tailscale)</text>
+      <svg class="diagram" viewBox="0 0 720 280" role="img" aria-label="Dos honeypots en proveedores distintos envían a un hub Wazuh en un tercer proveedor por un overlay cifrado; el admin entra por el mismo overlay">
+        <text class="d-ts" x="227" y="16" text-anchor="middle">atacantes / internet · solo puertos ICS</text>
+        <line class="d-line" x1="112" y1="22" x2="112" y2="48" marker-end="url(#ar6m)"/>
+        <line class="d-line" x1="342" y1="22" x2="342" y2="48" marker-end="url(#ar6m)"/>
+
+        <rect class="d-dmz" x="12" y="50" width="200" height="86" rx="12"/>
+        <text class="d-ts" x="112" y="70" text-anchor="middle">proveedor 1 · VPS</text>
+        <text class="d-tb" x="112" y="92" text-anchor="middle">VM-A · gaseoducto</text>
+        <text class="d-mono" x="112" y="110" text-anchor="middle">10.99.0.11</text>
+        <text class="d-ts" x="112" y="126" text-anchor="middle">egress: solo el overlay</text>
+
+        <rect class="d-dmz" x="242" y="50" width="200" height="86" rx="12"/>
+        <text class="d-ts" x="342" y="70" text-anchor="middle">proveedor 2 · VPS</text>
+        <text class="d-tb" x="342" y="92" text-anchor="middle">VM-B · biometano</text>
+        <text class="d-mono" x="342" y="110" text-anchor="middle">10.99.0.12</text>
+        <text class="d-ts" x="342" y="126" text-anchor="middle">egress: solo el overlay</text>
+
+        <rect class="d-safe" x="488" y="50" width="220" height="86" rx="12"/>
+        <text class="d-ts" x="598" y="70" text-anchor="middle">proveedor 3 · free tier</text>
+        <text class="d-tb" x="598" y="92" text-anchor="middle">Hub Wazuh</text>
+        <text class="d-mono" x="598" y="110" text-anchor="middle">10.99.0.1</text>
+        <text class="d-ts" x="598" y="126" text-anchor="middle">sin puertos de gestión públicos</text>
+
+        <line class="d-line-acc" x1="112" y1="136" x2="112" y2="176"/>
+        <line class="d-line-acc" x1="342" y1="136" x2="342" y2="176"/>
+        <line class="d-line-acc" x1="560" y1="176" x2="560" y2="140" marker-end="url(#ar6a)"/>
+        <text class="d-mono" x="552" y="162" text-anchor="end">1514/1515 · NTP</text>
+
+        <rect class="d-acc" x="12" y="176" width="696" height="34" rx="8"/>
+        <text class="d-t" x="300" y="198" text-anchor="middle">overlay cifrado — WireGuard (udp/51820) o Tailscale</text>
+
+        <text class="d-ts" x="300" y="232" text-anchor="middle">el hub nunca inicia hacia los honeypots · los honeypots no se ven entre sí</text>
+
+        <line class="d-line" x1="660" y1="236" x2="660" y2="210" stroke-dasharray="4 4"/>
+        <text class="d-mono" x="652" y="228" text-anchor="end">443 · 22</text>
+        <rect class="d-box" x="600" y="236" width="118" height="34" rx="8"/>
+        <text class="d-t" x="659" y="258" text-anchor="middle">Admin · overlay</text>
+        <defs>
+          <marker id="ar6a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="var(--accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+          <marker id="ar6m" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M2 1L8 5L2 9" fill="none" stroke="var(--fg-muted)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </marker>
+        </defs>
       </svg>
     </div>
-    <figcaption>Malla overlay entre cada honeypot y Wazuh (recomendado, SIEM sin
-    puerto público), o endpoint Wazuh público con ingress restringido por IP. La
-    correlación cruzada no cambia.</figcaption>
+    <figcaption>Direcciones del overlay WireGuard: hub <code>.1</code>, sitios
+    <code>.11</code>/<code>.12</code>, T-Pot <code>.13</code>, admin
+    <code>.100</code>. Con Tailscale son direcciones 100.x del tailnet. La
+    correlación cruzada no cambia: ocurre en el manager, por
+    <code>src_ip</code>.</figcaption>
   </figure>
+
+  <h3>Dos opciones de overlay</h3>
+  <div class="scroll">
+    <table>
+      <caption>WireGuard puro es la opción por defecto; Tailscale lleva los mismos flujos.</caption>
+      <thead><tr><th></th><th>WireGuard (por defecto)</th><th>Tailscale</th></tr></thead>
+      <tbody>
+        <tr><td>Exposición del hub</td><td><code>udp/51820</code>, mudo ante paquetes no autenticados</td><td>ninguna (atraviesa NAT)</td></tr>
+        <tr><td>Reglas de acceso</td><td>firewalls de host</td><td>política del tailnet <b>y</b> firewalls de host</td></tr>
+        <tr><td>Salida del honeypot</td><td>un <b>destino</b>: IP del hub, <code>udp/51820</code></td><td>un <b>proceso</b>: <code>tailscaled</code>, identificado por su cgroup</td></tr>
+        <tr><td>Claves y revocación</td><td>a mano, por peer</td><td>auth keys; borrar el dispositivo en la consola</td></tr>
+        <tr><td>Terceros</td><td>ninguno</td><td>el servicio de coordinación ve metadatos (nodos, IPs públicas, horas), no el tráfico</td></tr>
+        <tr><td>Acceso del admin</td><td>un peer WireGuard</td><td>cualquiera de sus dispositivos</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid c2" style="margin-top:14px">
+    <div class="card"><h3><span class="tag crit">nivel 14</span> Trampa de egress</h3>
+      <p class="muted">El firewall del honeypot (<code>nftables-honeypot.nft</code>)
+      registra (<code>HONEYGAS-EGRESS-DENY</code>) y cuenta cada paquete de salida
+      que rechaza. El agente Wazuh lee el contador cada 60 s y la regla
+      <code>100260</code> salta en cuanto cambia, o si alguien toca el firewall:
+      señal para reconstruir la VM. En una caja silenciosa el contador debe
+      quedarse a cero.</p></div>
+    <div class="card"><h3><span class="tag hi">Tailscale</span> Ajustes que importan</h3>
+      <ul class="muted">
+        <li><code>--accept-dns=false</code>: si no, el DNS de cualquier proceso saldría por <code>tailscaled</code> (canal de exfiltración).</li>
+        <li><code>--netfilter-mode=off</code>: si no, Tailscale acepta todo lo que llega por el túnel antes que nuestras reglas.</li>
+        <li>Tailnet dedicado, sin la regla «permitir todo»; sin logs al fabricante ni auto-update.</li>
+        <li>Tras recargar el firewall del honeypot, <b>reiniciar <code>tailscaled</code></b>.</li>
+      </ul></div>
+  </div>
+
+  <h3>Pasos</h3>
+  <ol>
+    <li><b>Hub:</b> Wazuh (<code>provision.sh</code> con <code>MISSION=wazuh</code>),
+    el túnel (<code>wg-hub.conf.example</code> o un nodo <code>tag:siem</code>) y
+    su firewall, <code>wazuh-hub-firewall.sh</code>, que cierra el SSH público.</li>
+    <li><b>Honeypots:</b> <code>provision.sh</code> con
+    <code>WAZUH_MANAGER_IP</code> = dirección del hub en el overlay; desactivar su
+    ufw; levantar el túnel; completar el agente con
+    <code>agent-ossec.conf</code>.</li>
+    <li><b>Bloqueo:</b> silenciar el host, aplicar
+    <code>nftables-honeypot.nft</code> con vuelta atrás automática a los 3
+    minutos, 24 h de prueba y un disparo deliberado de la trampa
+    (<code>curl -m 3 http://1.1.1.1/</code>).</li>
+  </ol>
+  <p class="muted">Ficheros: <code>deploy/nftables-honeypot.nft</code>,
+  <code>deploy/wazuh-hub-firewall.sh</code>, <code>deploy/wg-*.conf.example</code>,
+  <code>deploy/tailscale-policy.hujson</code>,
+  <code>deploy/tailscaled-egress.conf</code>. El paso a paso completo está en
+  <code>docs/deployment-wazuh.md</code> (§3–§5 WireGuard, §8 Tailscale).</p>
+  <div class="callout"><b>Sin overlay:</b> Wazuh <code>1514/tcp</code> público,
+  restringido a las IPs de los honeypots. Es más simple, pero el SIEM queda con
+  un puerto expuesto a internet. Mejor el overlay.</div>
 </section>
 
 <section id="telemetria">
@@ -448,11 +544,15 @@ footer{border-top:1px solid var(--border);padding-block:24px;color:var(--fg-fain
       se recrea desde la imagen dorada, no se desinfecta. Programado (higiene) y
       por disparadores de Wazuh.</p></div>
   </div>
-  <p class="muted"><b>Disparadores:</b> el agente deja de reportar (503/505/506),
-  FIM detecta cambios fuera del FS read-only (550/554), egress denegado desde el
-  honeypot. <b>Sin pérdida:</b> la evidencia ya está en Wazuh antes de borrar.
-  <b>Cómo:</b> <code>docker/rebuild.sh</code> (contenedor) o terminate+recreate
-  de la VM. Y si tumban la caja, el silencio del agente es la alerta.</p>
+  <p class="muted"><b>Disparadores:</b> salta la trampa de egress (regla
+  <code>100260</code>), el agente deja de reportar (503/505/506), FIM detecta
+  cambios fuera del FS read-only (550/554). <b>Sin pérdida:</b> la evidencia ya
+  está en Wazuh antes de borrar. <b>Cómo:</b> <code>docker/rebuild.sh</code>
+  (contenedor; reutiliza la imagen local porque la caja no tiene salida) o
+  reinstalar la VM desde su bootstrap. Tras reconstruir una VM, su clave del
+  overlay se da por robada: con WireGuard, claves nuevas y sustituir su peer en
+  el hub; con Tailscale, borrar el dispositivo en la consola. Y si tumban la
+  caja, el silencio del agente es la alerta.</p>
 </section>
 
 <section id="tpot">
@@ -465,6 +565,7 @@ footer{border-top:1px solid var(--border);padding-block:24px;color:var(--fg-fain
     <li>Edición <b>sensor</b> (<code>./install.sh -s -t s</code>): más ligera (8 GB, sin Kibana local), logs a <code>~/tpotce/data</code> que el agente Wazuh lee.</li>
     <li><code>provision.sh</code> desactiva <b>Conpot</b> para que HoneyGas siga siendo el ICS de alta fidelidad.</li>
     <li>Requiere <b>egress</b> (no se bloquea), <b>reinicia</b> y mueve SSH a <code>64295</code> / UI a <code>64297</code>.</li>
+    <li>Entra en el overlay como un honeypot más (<code>10.99.0.13</code> o un nodo <code>tag:sensor</code>), pero <b>sin</b> <code>nftables-honeypot.nft</code>: necesita salida abierta.</li>
   </ul>
   <p class="muted">Correlación extra: una misma <code>src_ip</code> golpeando
   T-Pot y un sitio HoneyGas es señal fuerte de reconocimiento dirigido.</p>
@@ -476,7 +577,8 @@ footer{border-top:1px solid var(--border);padding-block:24px;color:var(--fg-fain
     <div class="card"><h3>Validar el despliegue</h3>
       <ul class="muted">
         <li>El honeypot responde (<code>nmap -sV -p 502,102,2404,20000</code>) y crece <code class="kbd">honeygas-audit.jsonl</code>.</li>
-        <li>Egress cerrado: <code>curl -m5</code> a internet falla; el agente sigue conectado.</li>
+        <li>Overlay arriba: <code>wg show</code> con handshake reciente por peer (o <code>tailscale status</code>); desde fuera, nada de gestión abierto.</li>
+        <li>Egress cerrado: <code>curl -m5</code> a internet falla, el agente sigue conectado y salta la regla <code>100260</code>.</li>
         <li>Wazuh: agente <code>Active</code>, eventos con <code>rule.groups:honeygas</code>, y salta la regla cross-site (<code>100250</code>).</li>
       </ul></div>
     <div class="card"><h3>Operación</h3>
