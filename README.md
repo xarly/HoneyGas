@@ -593,7 +593,7 @@ service that is meant to be attacked. Captured data persists on the
 
 To run a **gaseoducto (transport)** and a **biometano (biomethane)** site as two
 independent cloud VMs at different providers, feeding a **Wazuh** SIEM over a
-WireGuard management overlay, see
+WireGuard management overlay (plain WireGuard or Tailscale), see
 **[docs/deployment-wazuh.md](docs/deployment-wazuh.md)**. That guide covers
 sizing and hosting choices (the cheapest layout puts Wazuh on a cloud free
 tier and each honeypot on the smallest VPS plan of a different provider), the network
@@ -608,7 +608,7 @@ artifacts:
 | [`config/honeygas.transport.yaml`](config/honeygas.transport.yaml) / [`config/honeygas.biomethane.yaml`](config/honeygas.biomethane.yaml) | per-site instance configs |
 | [`docker/compose.transport.yml`](docker/compose.transport.yml) / [`docker/compose.biomethane.yml`](docker/compose.biomethane.yml) | one hardened stack per VM |
 | [`docker/rebuild.sh`](docker/rebuild.sh) | container-level reset/clean |
-| [`deploy/`](deploy/) | honeypot and hub host firewalls, WireGuard overlay templates |
+| [`deploy/`](deploy/) | honeypot and hub host firewalls, WireGuard templates, Tailscale policy + drop-in |
 | [`wazuh/`](wazuh/) | detection rules, host-agent config, optional CEF receiver |
 
 ## Data outputs

@@ -3,9 +3,10 @@
 This guide deploys **two independent HoneyGas instances** — a gas-transport
 station (gaseoducto) and a biomethane plant — on low-cost VMs at **two different
 providers**, and ingests their telemetry into a **Wazuh** hub at a third
-provider. A **WireGuard management overlay** (`10.99.0.0/24`) links them and
-replaces the private management subnet that a single-provider deployment would
-use (that variant is in §8).
+provider. A **WireGuard management overlay** links them and replaces the
+private management subnet that a single-provider deployment would use. The
+overlay is plain WireGuard (`10.99.0.0/24`) by default, or **Tailscale** (§8).
+The single-provider variant is in §9.
 
 The cheapest layout runs the hub on a cloud free tier, so you only pay for the
 two smallest VPS plans (§2).
@@ -103,6 +104,10 @@ VPS. The rest of this guide is unchanged.
                      Admin (10.99.0.100)
 ```
 
+This section and §4–§5 describe plain WireGuard; §8 lists what changes with
+Tailscale (the same flows, enforced by a tailnet policy as well, and no public
+port on the hub at all).
+
 The hub is the only WireGuard peer with a listening port. WireGuard does not
 answer unauthenticated packets, so scanners see **no open port** on the hub.
 The honeypots never listen for WireGuard at all; they dial the hub. All
@@ -190,9 +195,10 @@ sudo apt install -y iptables-persistent
 sudo deploy/wazuh-hub-firewall.sh
 ```
 
-It puts its own chains at the top of INPUT/FORWARD/OUTPUT and persists them
-with `netfilter-persistent`. On the public side it allows only replies, DHCP
-and `udp/51820`, so it **closes public SSH**: run it only after SSH over the
+It defaults to `OVERLAY=wireguard` and the overlay addresses of §3. It puts
+its own chains at the top of INPUT/FORWARD/OUTPUT and persists them with
+`netfilter-persistent`. On the public side it allows only replies, DHCP and
+`udp/51820`, so it **closes public SSH**: run it only after SSH over the
 overlay works. Your current session survives. It leaves the image's existing
 rules alone; don't flush them, because some cloud images need them to reach
 their metadata, DNS and NTP services. The script is idempotent; re-run it
@@ -287,9 +293,10 @@ re-opening egress on a live honeypot.
 
 ### 5.5 Lock egress
 
-Edit the `define` lines at the top of `deploy/nftables-honeypot.nft` (hub
-public IP and port), then apply it with a dead-man switch, so that a mistake
-rolls back by itself after 3 minutes:
+Edit the `define` lines at the top of `deploy/nftables-honeypot.nft` (overlay
+interface and addresses; with WireGuard, also the hub's public IP and port),
+then apply it with a dead-man switch, so that a mistake rolls back by itself
+after 3 minutes:
 
 ```bash
 sudo nft -c -f deploy/nftables-honeypot.nft                 # syntax check only
@@ -446,7 +453,7 @@ snapshots over the overlay first:
   reinstall API from a Wazuh integration or active response. After every
   VM-level rebuild:
   - generate **new WireGuard keys** and replace the VM's `[Peer]` on the hub —
-    the old private key may have been copied;
+    the old private key may have been copied (with Tailscale, see §8.5);
   - remove the old agent on the hub (`/var/ossec/bin/manage_agents -r <ID>`)
     and enrol the new one;
   - expect new SSH host keys on the admin side.
@@ -456,7 +463,127 @@ box down, the silence is itself the alert.
 
 ---
 
-## 8. Variant: single provider with a private network
+## 8. Overlay option: Tailscale instead of plain WireGuard
+
+Tailscale builds the same kind of WireGuard overlay, but hands out keys and
+addresses for you, applies access rules centrally and traverses NAT. As a
+result, **the hub needs no public port at all**. The flows of §3 stay exactly
+the same.
+
+| | Plain WireGuard (default) | Tailscale |
+|---|---|---|
+| Hub exposure | `udp/51820` (silent to scanners) | none |
+| Access rules | host firewalls | tailnet policy (central) **and** host firewalls |
+| Honeypot egress | one destination: hub IP, `udp/51820` | one **process**: the `tailscaled` service, to any destination (control plane, relays, peers). Every other process stays locked and counted |
+| Keys and revocation | by hand, per peer | auth keys; remove the device in the admin console |
+| Third party | none | the coordination service sees node metadata (names, public IPs, connection times), not the traffic. New connections need it to be up |
+| Admin access | one WireGuard peer | any of the admin's devices |
+
+The weaker point is the honeypot egress: it goes from "one destination" to
+"one process". A non-root breakout still cannot get out, and the tripwire still
+counts it. An attacker with root can abuse `tailscaled`, but root already
+defeats any host firewall, and FIM and agent-disconnect cover that case. If you
+want the convenience without the third-party control plane, a self-hosted
+control server (e.g. Headscale) works the same way, but must be reachable over
+HTTPS.
+
+### 8.1 Tailnet policy and auth keys
+
+- Load `deploy/tailscale-policy.hujson` in the admin console's access-control
+  editor. It defines `tag:siem` (hub) and `tag:sensor` (honeypots) and allows
+  only the §3 flows; everything else, including hub → honeypots and honeypot ↔
+  honeypot, is denied.
+- **Use a dedicated tailnet.** If you reuse one, merge the entries and remove
+  the default allow-all rule, which would let the honeypots reach every device
+  in it.
+- Create one **pre-approved, tagged, single-use** auth key per node (`tag:siem`
+  for the hub, `tag:sensor` for each honeypot).
+
+### 8.2 Settings on every node (hub and honeypots)
+
+```bash
+# /etc/default/tailscaled — no log upload to the vendor:
+FLAGS="--no-logs-no-support"
+
+sudo tailscale up --auth-key=<key> --advertise-tags=tag:sensor \
+     --hostname=<neutral-name> --accept-dns=false --netfilter-mode=off
+sudo tailscale set --auto-update=false
+tailscale ip -4      # note each node's 100.x address
+```
+
+- `--advertise-tags=tag:siem` on the hub.
+- `--accept-dns=false`: otherwise every process's DNS is answered by
+  `tailscaled` and forwarded from its own (allowed) traffic, which would be a
+  DNS exfiltration channel.
+- `--netfilter-mode=off`: otherwise `tailscaled` inserts iptables rules that
+  accept everything arriving on `tailscale0` ahead of ours. The host firewalls
+  stay in charge; `tailscaled` enforces the tailnet policy anyway.
+- Auto-update off: updates come from rebuilding (§7b).
+- Neutral hostnames (the site ids, not "honeypot").
+- Addresses: you can pin each node's 100.x address in the admin console, so
+  the configs below survive a rebuild.
+
+### 8.3 Hub (replaces §4.3–4.5)
+
+- No WireGuard. The provider's cloud firewall can drop **all** inbound
+  traffic.
+- Host firewall, with the 100.x addresses from §8.2 (`ADMIN` can list several
+  admin devices):
+  ```bash
+  sudo OVERLAY=tailscale HONEYPOTS="<hp-A> <hp-B>" ADMIN="<admin-1> <admin-2>" \
+       deploy/wazuh-hub-firewall.sh
+  ```
+  In this mode it opens no public port and routes nothing: admins reach the
+  honeypots directly over the tailnet.
+- NTP: in `/etc/chrony/chrony.conf`, add an `allow <hp-address>` line for each
+  honeypot.
+- The dashboard is at `https://<hub-100.x>`.
+
+### 8.4 Honeypots (replaces §5.2, changes §5.3–5.5)
+
+1. **Egress for `tailscaled` only.** Install the systemd drop-in, which refills
+   the firewall's `tailscaled_egress` chain with the cgroup of the starting
+   service, just before it runs:
+   ```bash
+   sudo install -D -m 0644 deploy/tailscaled-egress.conf \
+        /etc/systemd/system/tailscaled.service.d/10-honeygas-egress.conf
+   sudo systemctl daemon-reload
+   ```
+2. **DNS.** `tailscaled` resolves its control plane itself. On Ubuntu, disable
+   `systemd-resolved` and point `/etc/resolv.conf` straight at the provider's
+   resolvers. Otherwise `resolved` makes those lookups from its own cgroup,
+   which the firewall blocks and counts. Everything else that tries to resolve
+   names is still blocked, as intended.
+3. **Firewall values.** In `deploy/nftables-honeypot.nft` set
+   `OVERLAY_IF = "tailscale0"`, `HUB_OVERLAY` to the hub's 100.x address and
+   `ADMIN_OVERLAY` to your admin devices' addresses. `HUB_PUBLIC` and `WG_PORT`
+   are unused.
+4. **Agent.** Use the hub's 100.x address wherever §5.1, §5.3 and §5.4 say
+   `10.99.0.1` (`WAZUH_MANAGER`, `agent-ossec.conf`, `agent-auth -m`, NTP).
+5. **Lock egress** as in §5.5, but restart `tailscaled` right after loading the
+   ruleset, because loading it recreates the chain empty:
+   ```bash
+   sudo nft -f /etc/nftables.conf && sudo systemctl restart tailscaled && \
+     sudo systemd-run --on-active=180 --unit=hg-fw-rollback nft delete table inet honeygas_host
+   ```
+   Then test SSH over the tailnet (`ssh <user>@<hp-100.x>`) and cancel the
+   rollback as in §5.5. **Every time you reload the firewall, restart
+   `tailscaled`**; otherwise its traffic is blocked and the tripwire fires.
+
+The burn-in and the deliberate tripwire test (§5.6) are unchanged.
+
+### 8.5 After a VM-level rebuild
+
+- Remove the old device in the admin console: that revokes its key, which
+  the attacker may have copied.
+- Enrol the new VM with a fresh single-use auth key.
+- If its 100.x address changed, update `HONEYPOTS` on the hub (re-run the
+  firewall script) and the hub's `chrony.conf`.
+- Then continue as in §7b (old Wazuh agent, SSH host keys).
+
+---
+
+## 9. Variant: single provider with a private network
 
 If you prefer one bill and one console, and the provider offers private
 networks and cloud firewalls (often free), you can drop WireGuard:
@@ -464,8 +591,8 @@ networks and cloud firewalls (often free), you can drop WireGuard:
 - put the hub on the private network only, and use its private IP wherever
   this guide says `10.99.0.1` (agent config, `agent-auth`, NTP);
 - express the §3 table in the provider's firewall;
-- run `deploy/wazuh-hub-firewall.sh` with `WG_IF` set to the hub's private
-  interface and `HONEYPOTS` / `ADMIN` set to private addresses;
+- run `deploy/wazuh-hub-firewall.sh` with `OVERLAY_IF` set to the hub's
+  private interface and `HONEYPOTS` / `ADMIN` set to private addresses;
 - keep `deploy/nftables-honeypot.nft` on the honeypots, replacing its two
   WireGuard rules with "private interface → hub private IP, tcp 1514/1515 and
   udp 123".
@@ -475,7 +602,7 @@ different locations and subnets to limit the correlation.
 
 ---
 
-## 9. File map
+## 10. File map
 
 | Path | Role |
 |------|------|
@@ -485,10 +612,12 @@ different locations and subnets to limit the correlation.
 | `docker/compose.biomethane.yml`   | VM-B stack (no ATG) |
 | `docker/rebuild.sh`               | container-level reset/clean (reuses the local image) |
 | `deploy/nftables-honeypot.nft`    | honeypot host firewall: bait in, tunnel-only egress, egress tripwire |
-| `deploy/wazuh-hub-firewall.sh`    | hub host firewall (iptables): public side closed, overlay rules |
+| `deploy/wazuh-hub-firewall.sh`    | hub host firewall (iptables): public side closed, overlay rules (WireGuard or Tailscale) |
 | `deploy/wg-hub.conf.example`      | WireGuard config, hub |
 | `deploy/wg-honeypot.conf.example` | WireGuard config, each honeypot |
 | `deploy/wg-admin.conf.example`    | WireGuard config, admin workstation |
+| `deploy/tailscale-policy.hujson`  | Tailscale option: tailnet policy (tags + the §3 flows) |
+| `deploy/tailscaled-egress.conf`   | Tailscale option: systemd drop-in that lets only `tailscaled` out |
 | `wazuh/local_rules.xml`           | detection + cross-site correlation + egress tripwire rules |
 | `wazuh/agent-ossec.conf`          | host agent: JSON ingest, host FIM, egress tripwire |
 | `wazuh/manager-syslog.xml`        | optional CEF receiver |

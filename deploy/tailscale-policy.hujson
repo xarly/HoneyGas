@@ -1,0 +1,24 @@
+// Tailnet policy for the HoneyGas Tailscale overlay (docs/deployment-wazuh.md
+// section 8). Paste it into the admin console's access-control editor.
+//
+// Default deny: only the flows below exist. In particular the hub never reaches
+// the honeypots, and the honeypots never reach each other or your devices.
+//
+// Use a dedicated tailnet if you can. If you reuse one, MERGE these entries and
+// remove the default allow-all rule ("src": ["*"], "dst": ["*:*"]): it would
+// let the honeypots reach every device in the tailnet.
+{
+	"tagOwners": {
+		"tag:siem":   ["autogroup:admin"], // the Wazuh hub
+		"tag:sensor": ["autogroup:admin"], // the honeypot VMs
+	},
+
+	"acls": [
+		// Honeypots -> hub: Wazuh agent events (1514) and enrolment (1515)...
+		{"action": "accept", "src": ["tag:sensor"], "proto": "tcp", "dst": ["tag:siem:1514,1515"]},
+		// ...and NTP served by the hub.
+		{"action": "accept", "src": ["tag:sensor"], "proto": "udp", "dst": ["tag:siem:123"]},
+		// Admins: dashboard and SSH on the hub, SSH on the honeypots.
+		{"action": "accept", "src": ["autogroup:admin"], "proto": "tcp", "dst": ["tag:siem:22,443", "tag:sensor:22"]},
+	],
+}
