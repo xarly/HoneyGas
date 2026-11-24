@@ -139,5 +139,24 @@ dnp3:
     - {index: 1, group: 12, label: "Flare command (CROB)"}
     - {index: 0, group: 41, label: "CH4 setpoint (analog output)"}
 
+# OPC UA server (opc.tcp, TCP/4840). See the note in profile_transport.yaml.
+opcua:
+  application_name: "BioGridTech Plant SCADA"
+  application_uri: "urn:biogridtech:plant01:scada"
+  product_uri: "urn:BioGridTech:BGT-BioUpgrade-500"
+  nodes:
+    - {id: ch4_pct,              tag: ch4_pct,              label: "CH4 purity (%)"}
+    - {id: co2_pct,              tag: co2_pct,              label: "CO2 (%)"}
+    - {id: h2s_ppm,              tag: h2s_ppm,              label: "H2S (ppm)"}
+    - {id: digester1_temp_c,     tag: digester1_temp_c,     label: "Digester 1 temp (C)"}
+    - {id: biogas_flow_nm3h,     tag: biogas_flow_nm3h,     label: "Biogas flow (Nm3/h)"}
+    - {id: injection_flow_nm3h,  tag: injection_flow_nm3h,  label: "Injection flow (Nm3/h)"}
+    - {id: grid_pressure_bar,    tag: grid_pressure_bar,    label: "Grid pressure (bar)"}
+    - {id: wobbe_index,          tag: wobbe_index,          label: "Wobbe index (MJ/m3)"}
+    - {id: compressor_speed_rpm, tag: compressor_speed_rpm, writable: true, label: "Compressor speed setpoint (rpm)"}
+    - {id: plant_running,          kind: bool, static: 1, label: "Plant running"}
+    - {id: grid_injection_enabled, kind: bool, static: 1, writable: true, label: "Grid injection enabled"}
+    - {id: flare_active,           kind: bool, static: 0, writable: true, label: "Flare active"}
+
 # No ATG in this profile; the atg_veeder listener will log/capture generically.
 atg: null

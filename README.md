@@ -31,6 +31,7 @@ training. It is **not** an attack tool and contains no real exploits.
   - [S7comm emulation detail](#s7comm-emulation-detail)
   - [IEC-104 emulation detail](#iec-104-emulation-detail)
   - [DNP3 emulation detail](#dnp3-emulation-detail)
+  - [OPC UA emulation detail](#opc-ua-emulation-detail)
   - [Audit event taxonomy](#audit-event-taxonomy)
   - [Out-of-band alerting](#out-of-band-alerting)
   - [Data model (profile schema)](#data-model-profile-schema)
@@ -66,6 +67,7 @@ without touching code.
 | S7comm       | 102   | `S7CommService` | Full emulation: COTP connect, Setup Comm, **Read SZL** PLC fingerprint (order no./firmware/serial), Read/Write Var, PLC STOP/START |
 | IEC 60870-5-104 | 2404 | `Iec104Service` | Full emulation: STARTDT/STOPDT/TESTFR, **General Interrogation** (live points), clock sync, spontaneous data, and audited **control commands** |
 | DNP3         | 20000 | `Dnp3Service` | Full emulation: link layer (framing + DNP3 CRC), Request Link Status, **Class 0 integrity read** (live analog/binary/counter points), restart-bit handling, and audited **SELECT/OPERATE** controls (CROB + analog) |
+| OPC UA (opc.tcp) | 4840 | `OpcuaService` | Full binary emulation: UA-TCP handshake, SecureChannel (security None), **GetEndpoints/FindServers** fingerprint, Create/Activate session, **Read** (live nodes), Browse, and audited **Write** to control nodes |
 
 Disable or re-port any of them in `config/honeygas.yaml`.
 
@@ -172,6 +174,7 @@ HoneyGas/
 │       ├── s7comm.py            # Siemens S7comm (TPKT/COTP/S7) full emulation
 │       ├── iec104.py            # IEC 60870-5-104 telecontrol full emulation
 │       ├── dnp3.py              # DNP3 outstation (link/transport/application) full emulation
+│       ├── opcua.py             # OPC UA server (UA-TCP + SecureChannel + services) full emulation
 │       └── tcp_capture.py       # generic capture fallback (no listener wired by default)
 ├── docker/
 │   ├── Dockerfile               # non-root, slim runtime image
@@ -268,8 +271,9 @@ lifecycle, convenience accessors (`audit`, `sessions`, `sim`, `quarantine`,
 - **`s7comm.py` — `S7CommService`** — full Siemens S7 emulation (see below).
 - **`iec104.py` — `Iec104Service`** — full IEC 60870-5-104 emulation (see below).
 - **`dnp3.py` — `Dnp3Service`** — full DNP3 outstation emulation (see below).
+- **`opcua.py` — `OpcuaService`** — full OPC UA server emulation (see below).
 - **`tcp_capture.py` — `TcpCaptureService`** — a generic capture front-end. All
-  six shipped listeners now use dedicated full-emulation services, so nothing in
+  seven shipped listeners now use dedicated full-emulation services, so nothing in
   the default config uses this; it remains the fallback for any new port you
   point at it (`type: tcp_capture`) before promoting it to its own module. It
   performs a minimal protocol-plausible handshake to keep scanners talking, logs
@@ -452,6 +456,37 @@ link address, monitored points by index/group/tag, control points by
 index/group). If a profile omits the block, analog inputs are synthesized from
 its HMI tag list.
 
+### OPC UA emulation detail
+
+`opcua.py` implements the OPC UA binary protocol over `opc.tcp` (TCP/4840) —
+the modern industrial interoperability standard — with security mode **None**
+(what discovery clients and scanners use):
+
+    UA-TCP (HEL/ACK)  ->  UA Secure Conversation (OPN)  ->  Message (MSG) services
+
+- **Handshake** — `Hello` → `Acknowledge` (buffer negotiation), then
+  `OpenSecureChannel` → a security-None channel + token → `opcua.open_channel`.
+- **Discovery (the fingerprint path)** — `GetEndpoints` / `FindServers` return a
+  believable server (application name, product URI, the None endpoint with an
+  anonymous user-token policy), which is what nmap/Shodan-style OPC UA probes
+  read → `opcua.get_endpoints`.
+- **Session** — `CreateSession` → `ActivateSession` give a working session.
+- **Read** — variable nodes at `ns=1;s=<id>` return **live simulator values**
+  (Double) or states (Boolean), checking the attacker's session overlay first
+  → `opcua.read`.
+- **Write** — the control-tampering event: writes to writable nodes are logged
+  at **`high`**, inventoried as evidence via `capture_call`, applied **only to
+  the attacker's isolated session view**, and answered `Good` so the attacker
+  believes the write took effect. The simulated plant is untouched →
+  `opcua.write`.
+- **Browse** — lists the variable nodes under the Objects folder (`i=85`).
+- Any unsupported service is answered with a `ServiceFault`
+  (`Bad_ServiceUnsupported`) and inventoried → `opcua.unknown_service`.
+
+Nodes are defined per-profile in the `opcua:` block (application identity and a
+list of variable nodes, `writable` marking the control points). If a profile
+omits the block, analog nodes are synthesized from its HMI tag list.
+
 ### Audit event taxonomy
 
 Every line in `data/audit/honeygas-audit.jsonl` carries `ts`, `event_id`,
@@ -489,6 +524,10 @@ Every line in `data/audit/honeygas-audit.jsonl` carries `ts`, `event_id`,
 | dnp3 | `dnp3.read` / `dnp3.write` | info / notice | Class 0 integrity read / Internal-Indications write |
 | dnp3 | `dnp3.control` | **high** | SELECT/OPERATE on a CROB or analog output (into session view) |
 | dnp3 | `dnp3.restart` | **critical** | COLD/WARM restart attempt |
+| opcua | `opcua.connect` / `opcua.open_channel` | notice / info | session / secure-channel open |
+| opcua | `opcua.get_endpoints` / `opcua.create_session` | notice | discovery / session establishment |
+| opcua | `opcua.read` | info | node value read |
+| opcua | `opcua.write` | **high** | write to a control node (into session view) |
 | tcp | `tcp.connect` / `tcp.data` / `tcp.close` | notice / info | generic capture fallback (unused by default) |
 
 ### Out-of-band alerting
@@ -554,6 +593,9 @@ A profile YAML (`config/profile_<mode>.yaml`) is parsed by
   (**`Dnp3Point`** = `index`, `group` [30 analog input / 1 binary input /
   20 counter], `tag`/`static`, `scale`, `label`) and `controls[]`
   (**`Dnp3Control`** = `index`, `group` [12 CROB / 41 analog output], `label`).
+- **`OpcuaSpec`** — `application_name`, `application_uri`, `product_uri`, and
+  `nodes[]` (**`OpcuaNode`** = `id` [string, at `ns=1;s=id`], `tag`/`static`,
+  `scale`, `kind` [`analog` Double / `bool` Boolean], `writable`, `label`).
 
 ---
 
@@ -635,11 +677,14 @@ so runtime captures never land in version control.
 - **DNP3 points:** edit the `dnp3:` block in a profile (outstation link address,
   monitored points by index/group/tag, control points by index/group) to change
   what a Class 0 integrity read returns and which controls an attacker can try.
+- **OPC UA nodes:** edit the `opcua:` block in a profile (application identity
+  and variable nodes, `writable` marking control points) to change what the
+  server exposes at `ns=1;s=<id>` and which nodes an attacker can Write.
 - **New protocol:** subclass `honeygas.protocols.base.Service`, register it in
   `SERVICE_TYPES` in `honeygas/main.py`, add a listener entry in the config.
-  All six shipped listeners are now full emulations; `honeygas/protocols/`
-  (`s7comm.py`, `iec104.py`, `dnp3.py`) shows the pattern, and `tcp_capture.py`
-  is the capture-only fallback for a brand-new port before you promote it.
+  All seven shipped listeners are now full emulations; `honeygas/protocols/`
+  (`s7comm.py`, `iec104.py`, `dnp3.py`, `opcua.py`) shows the pattern, and
+  `tcp_capture.py` is the capture-only fallback for a brand-new port.
 - **YARA tagging:** set `quarantine.enable_yara: true`, drop rules at
   `config/rules.yar`, and `pip install yara-python`.
 
