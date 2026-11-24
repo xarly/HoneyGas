@@ -45,21 +45,23 @@ if [[ -z "$MISSION" ]]; then
     echo "¿Qué misión tiene esta máquina?"
     select _m in "gaseoducto  (honeypot transporte de gas)" \
                  "biometano   (honeypot planta de biometano)" \
-                 "wazuh       (SIEM / gestión)"; do
+                 "wazuh       (SIEM / gestión)" \
+                 "tpot        (sensor T-Pot: honeypots IT, feeds Wazuh)"; do
       case "${REPLY:-}" in
         1) MISSION=gaseoducto; break ;;
         2) MISSION=biometano;  break ;;
         3) MISSION=wazuh;      break ;;
-        *) echo "Elige 1, 2 o 3." ;;
+        4) MISSION=tpot;       break ;;
+        *) echo "Elige 1, 2, 3 o 4." ;;
       esac
     done
   else
-    die "Define MISSION=gaseoducto|biometano|wazuh (no hay TTY para el menú)."
+    die "Define MISSION=gaseoducto|biometano|wazuh|tpot (no hay TTY para el menú)."
   fi
 fi
 case "$MISSION" in
-  gaseoducto|biometano|wazuh) ;;
-  *) die "MISSION inválida: '$MISSION' (usa gaseoducto|biometano|wazuh)." ;;
+  gaseoducto|biometano|wazuh|tpot) ;;
+  *) die "MISSION inválida: '$MISSION' (usa gaseoducto|biometano|wazuh|tpot)." ;;
 esac
 log "Misión seleccionada: $MISSION"
 
@@ -136,9 +138,38 @@ install_wazuh_agent() {
     WAZUH_MANAGER="$WAZUH_MANAGER_IP" WAZUH_AGENT_GROUP="$group" WAZUH_AGENT_NAME="$name" \
       apt-get install -y wazuh-agent
   fi
-  append_agent_localfiles
+}
+
+start_agent() {
   systemctl daemon-reload
   systemctl enable --now wazuh-agent
+}
+
+append_tpot_localfiles() {
+  # Point the agent at T-Pot's on-disk honeypot logs. Paths follow T-Pot's
+  # ~/tpotce/data convention; confirm the exact filenames on the box.
+  local home="$1" conf="/var/ossec/etc/ossec.conf"
+  grep -q "tpotce/data" "$conf" 2>/dev/null && return 0
+  local blocks; blocks="$(mktemp)"
+  cat > "$blocks" <<XML
+  <localfile>
+    <log_format>json</log_format>
+    <location>${home}/tpotce/data/cowrie/log/cowrie.json</location>
+  </localfile>
+  <localfile>
+    <log_format>json</log_format>
+    <location>${home}/tpotce/data/suricata/log/eve.json</location>
+  </localfile>
+  <localfile>
+    <log_format>json</log_format>
+    <location>${home}/tpotce/data/dionaea/log/dionaea.json</location>
+  </localfile>
+XML
+  awk -v insfile="$blocks" '
+    /<\/ossec_config>/ && !done { while ((getline l < insfile) > 0) print l; done=1 }
+    { print }
+  ' "$conf" > "${conf}.new" && mv "${conf}.new" "$conf"
+  rm -f "$blocks"
 }
 
 install_rebuild_timer() {
@@ -178,6 +209,8 @@ deploy_honeypot() {
   log "Levantando el honeypot (${profile})"
   docker compose -f "${APP_DIR}/docker/compose.${profile}.yml" up --build -d
   install_wazuh_agent "$group"
+  append_agent_localfiles
+  start_agent
   install_rebuild_timer "$profile"
 }
 
@@ -190,19 +223,81 @@ deploy_wazuh() {
     curl -fsSL https://packages.wazuh.com/4.x/wazuh-install.sh -o /root/wazuh-install.sh
     bash /root/wazuh-install.sh -a
   fi
-  log "Creando grupos de agentes: gaseoducto, biometano"
-  for g in gaseoducto biometano; do
+  log "Creando grupos de agentes: gaseoducto, biometano, tpot"
+  for g in gaseoducto biometano tpot; do
     mkdir -p "/var/ossec/etc/shared/${g}"
   done
   chown -R wazuh:wazuh /var/ossec/etc/shared 2>/dev/null || true
-  log "Instalando reglas de detección de HoneyGas"
-  cp "${APP_DIR}/wazuh/local_rules.xml" /var/ossec/etc/rules/local_rules.xml
+  log "Instalando reglas de detección (HoneyGas + T-Pot)"
+  cat "${APP_DIR}/wazuh/local_rules.xml" > /var/ossec/etc/rules/local_rules.xml
+  [[ -f "${APP_DIR}/wazuh/local_rules_tpot.xml" ]] && \
+    cat "${APP_DIR}/wazuh/local_rules_tpot.xml" >> /var/ossec/etc/rules/local_rules.xml
   chown wazuh:wazuh /var/ossec/etc/rules/local_rules.xml 2>/dev/null || true
   systemctl restart wazuh-manager
 }
 
+# --------------------------------------------------------------- tpot mission
+disable_tpot_service() {
+  local f="$1" svc="$2"
+  [[ -f "$f" ]] || { warn "No existe ${f}; desactiva '${svc}' a mano."; return 1; }
+  apt-get install -y python3 python3-yaml >/dev/null 2>&1 || true
+  if command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
+    python3 - "$f" "$svc" <<'PY'
+import sys, yaml
+path, svc = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    doc = yaml.safe_load(fh) or {}
+services = doc.get("services", {})
+if svc in services:
+    del services[svc]
+    with open(path, "w") as fh:
+        yaml.safe_dump(doc, fh, default_flow_style=False, sort_keys=False)
+    print("removed:", svc)
+else:
+    print("not present:", svc)
+PY
+  else
+    warn "python3/pyyaml no disponible: elimina el bloque '${svc}:' de ${f} a mano."
+    return 1
+  fi
+}
+
+deploy_tpot() {
+  local tpot_user="${TPOT_USER:-tpot}" tpot_home
+  if ! id "$tpot_user" >/dev/null 2>&1; then
+    log "Creando usuario ${tpot_user} para T-Pot"
+    adduser --disabled-password --gecos "" "$tpot_user" >/dev/null
+  fi
+  tpot_home="$(getent passwd "$tpot_user" | cut -d: -f6)"
+  echo "${tpot_user} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${tpot_user}"
+  chmod 440 "/etc/sudoers.d/${tpot_user}"
+
+  log "Instalando el agente Wazuh (grupo tpot) apuntando a los logs de T-Pot"
+  install_wazuh_agent tpot
+  append_tpot_localfiles "$tpot_home"
+  start_agent
+
+  if [[ ! -d "${tpot_home}/tpotce" ]]; then
+    log "Instalando T-Pot (edición sensor) como ${tpot_user} — NECESITA salida a internet"
+    warn "T-Pot cambiará el SSH a 64295 y la UI a 64297, y requiere reinicio."
+    su - "$tpot_user" -c 'git clone https://github.com/telekom-security/tpotce && cd tpotce && ./install.sh -s -t s'
+  else
+    warn "Ya existe ${tpot_home}/tpotce; omito la instalación de T-Pot."
+  fi
+
+  if [[ -z "${TPOT_KEEP_CONPOT:-}" ]]; then
+    log "Desactivando Conpot (HoneyGas es el ICS de alta fidelidad)"
+    disable_tpot_service "${tpot_home}/tpotce/docker-compose.yml" conpot || true
+  fi
+}
+
 # ----------------------------------------------------------------- firewall
 apply_firewall() {
+  if [[ "$MISSION" == tpot ]]; then
+    warn "T-Pot gestiona su propio firewall (firewalld) y necesita egress abierto + inbound amplio."
+    warn "No aplico ufw. En la SG de nube: inbound de señuelo permitido, 64295/64297 solo al admin, egress abierto."
+    return 0
+  fi
   log "Aplicando firewall (ufw)"
   ufw --force reset >/dev/null
   ufw default deny incoming >/dev/null
@@ -262,6 +357,12 @@ summary() {
       echo "Dashboard     : https://<esta-IP>  (usuario admin; contraseña en wazuh-install-files.tar)"
       echo "Reglas        : /var/ossec/etc/rules/local_rules.xml"
       ;;
+    tpot)
+      echo "T-Pot         : instalado (edición sensor); se reinicia para activarse"
+      echo "Admin SSH     : puerto 64295    |    UI T-Pot: https://<esta-IP>:64297"
+      echo "Agente Wazuh  : $(systemctl is-active wazuh-agent 2>/dev/null || echo desconocido) (grupo tpot)"
+      echo "Logs T-Pot    : ${TPOT_USER:-tpot} -> ~/tpotce/data (ingeridos por el agente)"
+      ;;
   esac
   echo "Firewall      : $(ufw status | head -n1)"
   log "======================================================================"
@@ -273,6 +374,13 @@ case "$MISSION" in
   gaseoducto) install_docker; stage_repo; deploy_honeypot transport  gaseoducto ;;
   biometano)  install_docker; stage_repo; deploy_honeypot biomethane biometano ;;
   wazuh)      stage_repo; deploy_wazuh ;;
+  tpot)       stage_repo; deploy_tpot ;;
 esac
 apply_firewall
 summary
+
+if [[ "$MISSION" == tpot && -z "${TPOT_SKIP_REBOOT:-}" ]]; then
+  warn "T-Pot requiere reinicio para activarse. Reiniciando en 10 s (TPOT_SKIP_REBOOT=1 para omitir)."
+  sleep 10 || true
+  reboot
+fi

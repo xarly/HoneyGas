@@ -181,7 +181,7 @@ HoneyGas/
 │   └── rebuild.sh               # container-level reset/clean after compromise
 ├── deploy/
 │   ├── provision.sh             # all-in-one Debian provisioner (asks the machine's mission)
-│   └── cloud-init/              # per-VM user-data (gaseoducto / biometano / wazuh)
+│   └── cloud-init/              # per-VM user-data (gaseoducto / biometano / wazuh / tpot)
 ├── wazuh/                       # Wazuh drop-ins: rules, host-agent config, CEF receiver
 ├── docs/
 │   └── deployment-wazuh.md      # two-site cloud deployment + Wazuh ingestion guide

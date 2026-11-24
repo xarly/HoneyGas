@@ -1,0 +1,58 @@
+<!--
+  T-Pot detection rules for Wazuh (companion to local_rules.xml).
+
+  These fire on the JSON that T-Pot's honeypots write under ~/tpotce/data and
+  that the Wazuh agent (group "tpot") tails. Field names follow the common
+  Cowrie / Suricata / Dionaea schemas; they are ILLUSTRATIVE and version-
+  dependent, so confirm the exact fields on your T-Pot and tune. T-Pot's own
+  Kibana remains the deep-dive UI; these rules give Wazuh a single pane and let
+  it correlate T-Pot hits with the HoneyGas sites (rule 100250 in local_rules).
+
+  Rule ids are in the local range (100300+).
+-->
+<group name="tpot,honeypot,">
+
+  <!-- Cowrie (SSH/Telnet) base. -->
+  <rule id="100300" level="4">
+    <decoded_as>json</decoded_as>
+    <field name="eventid">^cowrie\.</field>
+    <description>T-Pot Cowrie: $(eventid) from $(src_ip)</description>
+  </rule>
+
+  <rule id="100310" level="10">
+    <if_sid>100300</if_sid>
+    <field name="eventid">^cowrie\.login\.success$</field>
+    <description>T-Pot Cowrie: successful login $(username)/$(password) from $(src_ip)</description>
+    <mitre><id>T1110</id></mitre>
+  </rule>
+
+  <rule id="100311" level="12">
+    <if_sid>100300</if_sid>
+    <field name="eventid">file_download|file_upload</field>
+    <description>T-Pot Cowrie: malware transfer ($(shasum)) from $(src_ip)</description>
+    <mitre><id>T1105</id></mitre>
+  </rule>
+
+  <rule id="100312" level="8">
+    <if_sid>100300</if_sid>
+    <field name="eventid">^cowrie\.command\.input$</field>
+    <description>T-Pot Cowrie: command executed in session from $(src_ip)</description>
+    <mitre><id>T1059</id></mitre>
+  </rule>
+
+  <!-- Dionaea (malware collection over SMB/FTP/HTTP/...). -->
+  <rule id="100320" level="12">
+    <decoded_as>json</decoded_as>
+    <field name="eventid">^dionaea\.</field>
+    <description>T-Pot Dionaea: artifact captured from $(src_ip)</description>
+    <mitre><id>T1105</id></mitre>
+  </rule>
+
+  <!-- Suricata IDS alerts. -->
+  <rule id="100330" level="8">
+    <decoded_as>json</decoded_as>
+    <field name="event_type">^alert$</field>
+    <description>T-Pot Suricata alert: $(alert.signature) from $(src_ip)</description>
+  </rule>
+
+</group>

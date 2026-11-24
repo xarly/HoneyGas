@@ -222,7 +222,32 @@ box down, the silence is itself the alert.
 
 ---
 
-## 6. File map
+## 6. Optional: T-Pot breadth sensor
+
+The HoneyGas instances give OT depth; a
+[T-Pot](https://github.com/telekom-security/tpotce) sensor adds IT breadth —
+Cowrie (SSH/Telnet), Dionaea (malware collection), Suricata (IDS), p0f and more
+— on its own VM/IP, feeding the same Wazuh.
+
+- **Edition** — the **sensor** edition (`./install.sh -s -t s`) is the fit: it is
+  lighter than a full node (8 GB vs 16 GB, no local Kibana) and keeps its logs
+  on disk under `~/tpotce/data`, which the Wazuh agent (group `tpot`) tails. If
+  you also want T-Pot's own Kibana + attack map, deploy a full/hive node (16 GB)
+  instead — but then you run two consoles; this design unifies on Wazuh.
+- **ICS ownership** — `provision.sh` disables T-Pot's **Conpot** (generic ICS) so
+  the HoneyGas sites stay the believable, high-fidelity ICS. Pass
+  `TPOT_KEEP_CONPOT=1` to keep it as a generic ICS lure instead.
+- **Caveats (different from the HoneyGas boxes)** — T-Pot **requires outbound
+  internet** (install, updates, log submission), so it is NOT egress-locked;
+  scope its egress at the cloud SG rather than denying it. Install **reboots**
+  the VM and moves **SSH to 64295** and the **UI to 64297** — restrict both to
+  the admin range at the SG.
+
+Deploy it with `MISSION=tpot` (menu option 4 of `provision.sh`) or the cloud-init
+`deploy/cloud-init/tpot.yaml`. Cross-site correlation then also covers T-Pot: a
+source hitting both T-Pot and a HoneyGas site is a strong targeted-recon signal.
+
+## 7. File map
 
 | Path | Role |
 |------|------|
@@ -234,5 +259,6 @@ box down, the silence is itself the alert.
 | `docker/compose.biomethane.yml`   | VM-B stack (no ATG) |
 | `docker/rebuild.sh`               | container-level reset/clean |
 | `wazuh/local_rules.xml`           | detection + cross-site correlation rules |
+| `wazuh/local_rules_tpot.xml`      | T-Pot (Cowrie/Dionaea/Suricata) detection rules |
 | `wazuh/agent-ossec.conf`          | host agent: JSON ingest + host FIM |
 | `wazuh/manager-syslog.xml`        | optional CEF receiver |

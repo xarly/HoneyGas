@@ -1,0 +1,33 @@
+#cloud-config
+# ============================================================================
+# HoneyGas cloud-init (user-data) - T-POT SENSOR VM
+# ----------------------------------------------------------------------------
+# A T-Pot sensor (IT-breadth honeypots: Cowrie, Dionaea, Suricata, ...) whose
+# logs are ingested by Wazuh. Deploy on its OWN VM/IP, on a different address
+# range from the HoneyGas sites. Needs ~8 GB RAM, ~128 GB disk, and -- unlike
+# the HoneyGas boxes -- OUTBOUND internet access (T-Pot requires it for
+# install, updates and log submission).
+#
+# Replace: the git URL (a repo you control) and WAZUH_MANAGER_IP.
+# The IP shown is an RFC 5737 documentation address, not a real host.
+#
+# NOTE: provision.sh installs T-Pot (sensor edition), disables Conpot so the
+# HoneyGas instances own the ICS role, installs the Wazuh agent (group tpot),
+# and then REBOOTS -- after which SSH is on 64295 and the T-Pot UI on 64297.
+#
+# SECURITY: user-data is readable from the metadata service. Put NO secrets
+# here. For a private repo, bake it into the image or use an out-of-band
+# read-only deploy key.
+# ============================================================================
+hostname: sensor-01
+package_update: true
+packages: [git, ca-certificates, curl]
+
+runcmd:
+  - [bash, -lc, "git clone --depth 1 https://git.example.com/you/HoneyGas.git /opt/honeygas/src"]
+  - [bash, -lc, "MISSION=tpot WAZUH_MANAGER_IP=203.0.113.10 /opt/honeygas/src/deploy/provision.sh"]
+
+# Optional env for the run command above:
+#   TPOT_KEEP_CONPOT=1   keep T-Pot's Conpot ICS honeypot (default: disabled)
+#   TPOT_SKIP_REBOOT=1   do not auto-reboot at the end (reboot manually later)
+#   TPOT_USER=tpot       the non-root user T-Pot is installed under
