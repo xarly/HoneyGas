@@ -85,6 +85,12 @@ sudo MISSION=biometano  WAZUH_MANAGER_IP=10.20.0.10 deploy/provision.sh   # VM-B
 sudo MISSION=wazuh HONEYPOT_CIDR=10.10.0.0/24 ADMIN_CIDR=10.0.0.0/24 deploy/provision.sh
 ```
 
+To wire this into VM creation, paste the matching file from
+`deploy/cloud-init/` (`gaseoducto.yaml`, `biometano.yaml`, `wazuh.yaml`) as the
+instance's user-data — it clones the repo and runs `provision.sh` with the
+mission preset. Edit the git URL and the example IP/CIDR values first, and keep
+**no secrets** in user-data (it is readable from the metadata service).
+
 The manual steps below are what that script automates.
 
 On each VM (one per profile), install Docker, create the data dir owned by the
@@ -221,6 +227,7 @@ box down, the silence is itself the alert.
 | Path | Role |
 |------|------|
 | `deploy/provision.sh`             | all-in-one Debian provisioner (asks the mission) |
+| `deploy/cloud-init/*.yaml`        | per-VM user-data that runs the provisioner on boot |
 | `config/honeygas.transport.yaml`  | gaseoducto instance config (transport profile) |
 | `config/honeygas.biomethane.yaml` | biometano instance config (biomethane profile) |
 | `docker/compose.transport.yml`    | VM-A stack (standard ports, own volume, hardened) |

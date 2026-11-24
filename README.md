@@ -180,7 +180,8 @@ HoneyGas/
 │   ├── compose.biomethane.yml   # two-site deploy: biometano VM
 │   └── rebuild.sh               # container-level reset/clean after compromise
 ├── deploy/
-│   └── provision.sh             # all-in-one Debian provisioner (asks the machine's mission)
+│   ├── provision.sh             # all-in-one Debian provisioner (asks the machine's mission)
+│   └── cloud-init/              # per-VM user-data (gaseoducto / biometano / wazuh)
 ├── wazuh/                       # Wazuh drop-ins: rules, host-agent config, CEF receiver
 ├── docs/
 │   └── deployment-wazuh.md      # two-site cloud deployment + Wazuh ingestion guide
