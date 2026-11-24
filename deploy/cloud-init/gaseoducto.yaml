@@ -1,0 +1,28 @@
+#cloud-config
+# ============================================================================
+# HoneyGas cloud-init (user-data) - GASEODUCTO VM (gas-transport honeypot)
+# ----------------------------------------------------------------------------
+# Paste as the VM's user-data on a minimal Debian image. Deploy on its OWN
+# VM/IP in the DMZ subnet, on a different address range from the biometano VM.
+#
+# Replace the example values below:
+#   - the git URL (a repo you control; see the SECURITY note),
+#   - WAZUH_MANAGER_IP (the Wazuh manager in the management subnet).
+# The IP/CIDR values shown are RFC 5737 documentation ranges, not real hosts.
+#
+# SECURITY: instance user-data is frequently readable from the metadata
+# service. Put NO secrets here (no git tokens, no passwords). For a private
+# repo, bake it into the golden image or use an out-of-band read-only deploy
+# key; with a baked image, drop the git-clone line and keep only the
+# provision.sh run command.
+# ============================================================================
+hostname: rtu-07
+package_update: true
+packages: [git, ca-certificates, curl]
+
+runcmd:
+  - [bash, -lc, "git clone --depth 1 https://git.example.com/you/HoneyGas.git /opt/honeygas/src"]
+  - [bash, -lc, "MISSION=gaseoducto WAZUH_MANAGER_IP=203.0.113.10 /opt/honeygas/src/deploy/provision.sh"]
+
+# Optional: restrict inbound SSH to your bastion by adding ADMIN_SSH_CIDR, e.g.
+#   MISSION=gaseoducto WAZUH_MANAGER_IP=203.0.113.10 ADMIN_SSH_CIDR=10.0.0.0/24 /opt/honeygas/src/deploy/provision.sh

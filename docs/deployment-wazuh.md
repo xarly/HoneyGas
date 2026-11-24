@@ -140,11 +140,30 @@ Overlay addressing:
 | `10.99.0.1`   | Wazuh hub |
 | `10.99.0.11`  | VM-A gaseoducto |
 | `10.99.0.12`  | VM-B biometano |
+| `10.99.0.13`  | T-Pot sensor (optional, §10) |
 | `10.99.0.100` | admin workstation |
+
+**Without an overlay.** You can instead expose Wazuh `1514/tcp` (and `1515`
+for enrolment) publicly, restricted to the honeypots' public IPs, and lock
+each honeypot's egress to that one address. Agent traffic is encrypted and
+enrolment is authenticated, so this is simpler, but the SIEM then has an
+internet-facing port. Prefer the overlay.
 
 ---
 
 ## 4. Build the Wazuh hub
+
+**Quick path — the all-in-one provisioner.** On a minimal Debian server,
+`deploy/provision.sh` with mission `wazuh` does the install part of §4.2: Wazuh
+all-in-one, the agent groups (`gaseoducto`, `biometano`, `tpot`) and the
+detection rules (HoneyGas + T-Pot). Give it the overlay ranges:
+
+```bash
+sudo MISSION=wazuh HONEYPOT_CIDR=10.99.0.0/24 ADMIN_CIDR=10.99.0.100/32 deploy/provision.sh
+```
+
+Then do the sizing of §4.2 and continue with §4.3. The provisioner's ufw
+firewall is replaced by the hub script in §4.4.
 
 ### 4.1 Instance
 
@@ -191,11 +210,14 @@ Add the admin workstation from `deploy/wg-admin.conf.example`. Check that
 ### 4.4 Host firewall
 
 ```bash
+sudo ufw --force disable            # only if the provisioner set up ufw
 sudo apt install -y iptables-persistent
 sudo deploy/wazuh-hub-firewall.sh
 ```
 
-It defaults to `OVERLAY=wireguard` and the overlay addresses of §3. It puts
+From here on, this script is the hub's only host firewall. It defaults to
+`OVERLAY=wireguard` and the overlay addresses of §3 (add the T-Pot sensor to
+`HONEYPOTS` if you run one). It puts
 its own chains at the top of INPUT/FORWARD/OUTPUT and persists them with
 `netfilter-persistent`. On the public side it allows only replies, DHCP and
 `udp/51820`, so it **closes public SSH**: run it only after SSH over the
@@ -223,6 +245,22 @@ The hub itself keeps syncing from its provider's NTP service.
 Do steps 5.1–5.4 while the VM still has normal egress (this is the
 "golden image" build), then lock it down (5.5–5.7). Use Debian 12 or
 Ubuntu 24.04 (x86), the provider's own image, the smallest plan.
+
+**Quick path — the all-in-one provisioner.** `deploy/provision.sh` with mission
+`gaseoducto` or `biometano` does §5.1 and installs the agent for §5.3: Docker,
+the site's stack, the Wazuh agent in its site group, and a daily clean-rebuild
+timer (`docker/rebuild.sh`). Point it at the hub's overlay address:
+
+```bash
+sudo MISSION=gaseoducto WAZUH_MANAGER_IP=10.99.0.1 deploy/provision.sh   # VM-A
+sudo MISSION=biometano  WAZUH_MANAGER_IP=10.99.0.1 deploy/provision.sh   # VM-B
+```
+
+Its ufw firewall (egress to the manager plus DNS/NTP) is the single-network
+model and would block the tunnel, so disable it (`sudo ufw --force disable`)
+and continue with §5.2; the agent enrols once the tunnel is up. In §5.3, still
+merge the syscheck, rootcheck and tripwire blocks of `wazuh/agent-ossec.conf`:
+the provisioner only adds the two JSON log files.
 
 ### 5.1 Base packages and HoneyGas
 
@@ -342,7 +380,11 @@ automatic rebuilds (§7b).
 
 Keep steps 5.1–5.5 as a script or cloud-init file in your private repo. That
 file is your "golden image": a VM-level rebuild means reinstalling the OS and
-running it again.
+running it again. `deploy/cloud-init/*.yaml` already run the provisioner at
+first boot; extend them with the overlay steps. Put **no secrets** in
+user-data, since it is often readable from the metadata service. That
+includes WireGuard private keys (generate them on the VM) and Tailscale auth
+keys (enter them afterwards over SSH).
 
 ---
 
@@ -350,7 +392,9 @@ running it again.
 
 The files in `wazuh/` are already in place from §4.2 and §5.3:
 
-1. **Rules** — `wazuh/local_rules.xml` on the hub.
+1. **Rules** — `wazuh/local_rules.xml` on the hub, plus
+   `wazuh/local_rules_tpot.xml` if you run the T-Pot sensor (the provisioner
+   installs both).
 2. **Agent (primary telemetry)** — runs on **each honeypot VM host** (not in
    the container) and talks only to `10.99.0.1` through the tunnel. It ships:
    - the complete JSON audit trail (`honeygas-audit.jsonl`), decoded natively so
@@ -415,8 +459,9 @@ disinfect it.
 
 **When (triggers):**
 
-- **Scheduled** — rebuild on a cadence (e.g. weekly) regardless of events, to
-  destroy any persistence and pick up OS updates.
+- **Scheduled** — rebuild the VM on a cadence (e.g. weekly) regardless of
+  events, to destroy any persistence and pick up OS updates. The provisioner
+  also installs a daily container-level rebuild (`honeygas-rebuild.timer`).
 - **Event-triggered** — rebuild immediately on a high-fidelity host-compromise
   signal from Wazuh:
   - **rule 100260** — the egress tripwire moved: the box tried to call out, or
@@ -602,10 +647,91 @@ different locations and subnets to limit the correlation.
 
 ---
 
-## 10. File map
+## 10. Optional: T-Pot breadth sensor
+
+The HoneyGas instances give OT depth; a
+[T-Pot](https://github.com/telekom-security/tpotce) sensor adds IT breadth —
+Cowrie (SSH/Telnet), Dionaea (malware collection), Suricata (IDS), p0f and more
+— on its own VM/IP, feeding the same Wazuh.
+
+- **Edition** — the **sensor** edition (`./install.sh -s -t s`) is the fit: it is
+  lighter than a full node (8 GB vs 16 GB, no local Kibana) and keeps its logs
+  on disk under `~/tpotce/data`, which the Wazuh agent (group `tpot`) tails. If
+  you also want T-Pot's own Kibana + attack map, deploy a full/hive node (16 GB)
+  instead — but then you run two consoles; this design unifies on Wazuh.
+- **ICS ownership** — `provision.sh` disables T-Pot's **Conpot** (generic ICS) so
+  the HoneyGas sites stay the believable, high-fidelity ICS. Pass
+  `TPOT_KEEP_CONPOT=1` to keep it as a generic ICS lure instead.
+- **Caveats (different from the HoneyGas boxes)** — T-Pot **requires outbound
+  internet** (install, updates, log submission), so it is NOT egress-locked;
+  scope its egress at the provider firewall rather than denying it. Install
+  **reboots** the VM and moves **SSH to 64295** and the **UI to 64297** —
+  restrict both to your admin address at the provider firewall.
+- **Overlay** — join it to the overlay like the honeypots (`10.99.0.13`, or a
+  `tag:sensor` Tailscale device), point its agent at the hub's overlay address,
+  and add that address to `HONEYPOTS` on the hub and to its `chrony.conf`. Do
+  **not** apply `deploy/nftables-honeypot.nft` to it: T-Pot needs open egress.
+
+Deploy it with `MISSION=tpot` (menu option 4 of `provision.sh`) or the cloud-init
+`deploy/cloud-init/tpot.yaml`. Cross-site correlation then also covers T-Pot: a
+source hitting both T-Pot and a HoneyGas site is a strong targeted-recon signal.
+
+---
+
+## 11. Validate the deployment
+
+From an authorised source only (never a production host), confirm each layer:
+
+- **Honeypot answers** — probe a bait port and expect a response, e.g.
+  `nmap -sV -p 502,102,2404,20000 <honeypot-ip>` or a Modbus/DNP3 client, then
+  watch the trail grow: `tail -f /opt/honeygas/data/audit/honeygas-audit.jsonl`.
+- **Overlay is up** — `sudo wg show` on the hub lists a recent handshake for
+  every peer (Tailscale: `tailscale status`).
+- **Nothing management-related is public** — from outside, a port scan of the
+  hub and of the honeypots' non-bait ports shows nothing open (WireGuard's
+  `udp/51820` does not answer unauthenticated packets).
+- **Egress is locked** — from the honeypot VM, an outbound to anything other than
+  the overlay should fail (`curl -m5 https://example.com` times out) while the
+  Wazuh agent stays connected, and rule **100260** fires within a minute
+  (§5.6). This proves a captured payload has nowhere to call home.
+- **Wazuh sees it** — on the manager, `/var/ossec/bin/agent_control -l` lists each
+  agent as `Active`; in the dashboard, filter `rule.groups:honeygas` (and
+  `:tpot`) and confirm events, with the `site` field distinguishing the plants.
+- **Cross-site rule fires** — hit both sites from the same source and confirm the
+  level-13 "multiple sites / targeted recon" alert (rule `100250`).
+- **T-Pot (if deployed)** — reach it on `ssh -p 64295` and the UI at
+  `https://<ip>:64297`, and confirm its events arrive in Wazuh under group `tpot`.
+
+---
+
+## 12. Operations
+
+- **Retention / disk.** HoneyGas's audit JSONL grows unbounded — rotate it with
+  logrotate (the agent follows rotation); quarantine dedups by sha256 but still
+  grows, and a reset (`rebuild.sh`) wipes it after the evidence has shipped.
+  T-Pot keeps ~30 days under `~/tpotce/data`. Set an index retention / ISM policy
+  on the Wazuh indexer so its storage stays bounded (§4.2).
+- **Updating / patching.** The honeypots are immutable: update by rebuilding the
+  golden image (new base image + `git pull`) and recreating the VM (§7b), not in
+  place. Update Wazuh via its documented upgrade path; update T-Pot with
+  `cd ~/tpotce && git pull` + reinstall (needs egress) or rebuild its VM.
+- **Overlay keys.** WireGuard: rotate a peer's keys whenever its VM is rebuilt
+  (§7b). Tailscale: remove rebuilt devices from the admin console (§8.5) and
+  review the device list now and then.
+- **Alert routing.** The rules put control tampering at level 12 and
+  captures/restarts and the egress tripwire at 14. Route level ≥12 to wherever
+  the on-call looks: Wazuh `<email_alerts>` for mail, an `<integration>` block
+  for Slack/webhook/TheHive, and the VirusTotal integration to auto-enrich
+  `capture.*` hashes.
+
+---
+
+## 13. File map
 
 | Path | Role |
 |------|------|
+| `deploy/provision.sh`             | all-in-one Debian provisioner (asks the mission) |
+| `deploy/cloud-init/*.yaml`        | per-VM user-data that runs the provisioner on boot |
 | `config/honeygas.transport.yaml`  | gaseoducto instance config (transport profile) |
 | `config/honeygas.biomethane.yaml` | biometano instance config (biomethane profile) |
 | `docker/compose.transport.yml`    | VM-A stack (standard ports, own volume, hardened) |
@@ -619,5 +745,6 @@ different locations and subnets to limit the correlation.
 | `deploy/tailscale-policy.hujson`  | Tailscale option: tailnet policy (tags + the §3 flows) |
 | `deploy/tailscaled-egress.conf`   | Tailscale option: systemd drop-in that lets only `tailscaled` out |
 | `wazuh/local_rules.xml`           | detection + cross-site correlation + egress tripwire rules |
+| `wazuh/local_rules_tpot.xml`      | T-Pot (Cowrie/Dionaea/Suricata) detection rules |
 | `wazuh/agent-ossec.conf`          | host agent: JSON ingest, host FIM, egress tripwire |
 | `wazuh/manager-syslog.xml`        | optional CEF receiver |

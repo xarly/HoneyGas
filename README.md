@@ -31,11 +31,14 @@ training. It is **not** an attack tool and contains no real exploits.
   - [S7comm emulation detail](#s7comm-emulation-detail)
   - [IEC-104 emulation detail](#iec-104-emulation-detail)
   - [DNP3 emulation detail](#dnp3-emulation-detail)
+  - [OPC UA emulation detail](#opc-ua-emulation-detail)
   - [Audit event taxonomy](#audit-event-taxonomy)
   - [Out-of-band alerting](#out-of-band-alerting)
   - [Data model (profile schema)](#data-model-profile-schema)
 - [Quick start (local)](#quick-start-local)
 - [Deployment (Docker)](#deployment-docker-recommended)
+  - [Two-site cloud deployment with Wazuh](#two-site-cloud-deployment-with-wazuh)
+  - [Management overlay (WireGuard / Tailscale)](#management-overlay-wireguard--tailscale)
 - [Data outputs](#data-outputs)
 - [Extending](#extending)
 - [Legal & ethical use](#legal--ethical-use)
@@ -66,6 +69,7 @@ without touching code.
 | S7comm       | 102   | `S7CommService` | Full emulation: COTP connect, Setup Comm, **Read SZL** PLC fingerprint (order no./firmware/serial), Read/Write Var, PLC STOP/START |
 | IEC 60870-5-104 | 2404 | `Iec104Service` | Full emulation: STARTDT/STOPDT/TESTFR, **General Interrogation** (live points), clock sync, spontaneous data, and audited **control commands** |
 | DNP3         | 20000 | `Dnp3Service` | Full emulation: link layer (framing + DNP3 CRC), Request Link Status, **Class 0 integrity read** (live analog/binary/counter points), restart-bit handling, and audited **SELECT/OPERATE** controls (CROB + analog) |
+| OPC UA (opc.tcp) | 4840 | `OpcuaService` | Full binary emulation: UA-TCP handshake, SecureChannel (security None), **GetEndpoints/FindServers** fingerprint, Create/Activate session, **Read** (live nodes), Browse, and audited **Write** to control nodes |
 
 Disable or re-port any of them in `config/honeygas.yaml`.
 
@@ -172,6 +176,7 @@ HoneyGas/
 │       ├── s7comm.py            # Siemens S7comm (TPKT/COTP/S7) full emulation
 │       ├── iec104.py            # IEC 60870-5-104 telecontrol full emulation
 │       ├── dnp3.py              # DNP3 outstation (link/transport/application) full emulation
+│       ├── opcua.py             # OPC UA server (UA-TCP + SecureChannel + services) full emulation
 │       └── tcp_capture.py       # generic capture fallback (no listener wired by default)
 ├── docker/
 │   ├── Dockerfile               # non-root, slim runtime image
@@ -179,9 +184,17 @@ HoneyGas/
 │   ├── compose.transport.yml    # two-site deploy: gaseoducto VM
 │   ├── compose.biomethane.yml   # two-site deploy: biometano VM
 │   └── rebuild.sh               # container-level reset/clean after compromise
-├── deploy/                      # host firewalls + WireGuard overlay templates (two-site deploy)
+├── deploy/
+│   ├── provision.sh             # all-in-one Debian provisioner (asks the machine's mission)
+│   ├── cloud-init/              # per-VM user-data (gaseoducto / biometano / wazuh / tpot)
+│   ├── nftables-honeypot.nft    # honeypot host firewall: bait in, overlay-only egress, tripwire
+│   ├── wazuh-hub-firewall.sh    # hub host firewall (WireGuard or Tailscale mode)
+│   ├── wg-*.conf.example        # WireGuard overlay templates (hub / honeypot / admin)
+│   ├── tailscale-policy.hujson  # Tailscale option: tailnet access policy
+│   └── tailscaled-egress.conf   # Tailscale option: systemd drop-in (only tailscaled gets out)
 ├── wazuh/                       # Wazuh drop-ins: rules, host-agent config, CEF receiver
 ├── docs/
+│   ├── index.html               # self-contained HTML documentation (diagrams, light/dark)
 │   └── deployment-wazuh.md      # two-site cloud deployment + Wazuh ingestion guide
 ├── data/
 │   ├── audit/                   # audit JSONL output (git-ignored)
@@ -265,8 +278,9 @@ lifecycle, convenience accessors (`audit`, `sessions`, `sim`, `quarantine`,
 - **`s7comm.py` — `S7CommService`** — full Siemens S7 emulation (see below).
 - **`iec104.py` — `Iec104Service`** — full IEC 60870-5-104 emulation (see below).
 - **`dnp3.py` — `Dnp3Service`** — full DNP3 outstation emulation (see below).
+- **`opcua.py` — `OpcuaService`** — full OPC UA server emulation (see below).
 - **`tcp_capture.py` — `TcpCaptureService`** — a generic capture front-end. All
-  six shipped listeners now use dedicated full-emulation services, so nothing in
+  seven shipped listeners now use dedicated full-emulation services, so nothing in
   the default config uses this; it remains the fallback for any new port you
   point at it (`type: tcp_capture`) before promoting it to its own module. It
   performs a minimal protocol-plausible handshake to keep scanners talking, logs
@@ -449,6 +463,37 @@ link address, monitored points by index/group/tag, control points by
 index/group). If a profile omits the block, analog inputs are synthesized from
 its HMI tag list.
 
+### OPC UA emulation detail
+
+`opcua.py` implements the OPC UA binary protocol over `opc.tcp` (TCP/4840) —
+the modern industrial interoperability standard — with security mode **None**
+(what discovery clients and scanners use):
+
+    UA-TCP (HEL/ACK)  ->  UA Secure Conversation (OPN)  ->  Message (MSG) services
+
+- **Handshake** — `Hello` → `Acknowledge` (buffer negotiation), then
+  `OpenSecureChannel` → a security-None channel + token → `opcua.open_channel`.
+- **Discovery (the fingerprint path)** — `GetEndpoints` / `FindServers` return a
+  believable server (application name, product URI, the None endpoint with an
+  anonymous user-token policy), which is what nmap/Shodan-style OPC UA probes
+  read → `opcua.get_endpoints`.
+- **Session** — `CreateSession` → `ActivateSession` give a working session.
+- **Read** — variable nodes at `ns=1;s=<id>` return **live simulator values**
+  (Double) or states (Boolean), checking the attacker's session overlay first
+  → `opcua.read`.
+- **Write** — the control-tampering event: writes to writable nodes are logged
+  at **`high`**, inventoried as evidence via `capture_call`, applied **only to
+  the attacker's isolated session view**, and answered `Good` so the attacker
+  believes the write took effect. The simulated plant is untouched →
+  `opcua.write`.
+- **Browse** — lists the variable nodes under the Objects folder (`i=85`).
+- Any unsupported service is answered with a `ServiceFault`
+  (`Bad_ServiceUnsupported`) and inventoried → `opcua.unknown_service`.
+
+Nodes are defined per-profile in the `opcua:` block (application identity and a
+list of variable nodes, `writable` marking the control points). If a profile
+omits the block, analog nodes are synthesized from its HMI tag list.
+
 ### Audit event taxonomy
 
 Every line in `data/audit/honeygas-audit.jsonl` carries `ts`, `event_id`,
@@ -486,6 +531,10 @@ Every line in `data/audit/honeygas-audit.jsonl` carries `ts`, `event_id`,
 | dnp3 | `dnp3.read` / `dnp3.write` | info / notice | Class 0 integrity read / Internal-Indications write |
 | dnp3 | `dnp3.control` | **high** | SELECT/OPERATE on a CROB or analog output (into session view) |
 | dnp3 | `dnp3.restart` | **critical** | COLD/WARM restart attempt |
+| opcua | `opcua.connect` / `opcua.open_channel` | notice / info | session / secure-channel open |
+| opcua | `opcua.get_endpoints` / `opcua.create_session` | notice | discovery / session establishment |
+| opcua | `opcua.read` | info | node value read |
+| opcua | `opcua.write` | **high** | write to a control node (into session view) |
 | tcp | `tcp.connect` / `tcp.data` / `tcp.close` | notice / info | generic capture fallback (unused by default) |
 
 ### Out-of-band alerting
@@ -551,6 +600,9 @@ A profile YAML (`config/profile_<mode>.yaml`) is parsed by
   (**`Dnp3Point`** = `index`, `group` [30 analog input / 1 binary input /
   20 counter], `tag`/`static`, `scale`, `label`) and `controls[]`
   (**`Dnp3Control`** = `index`, `group` [12 CROB / 41 analog output], `label`).
+- **`OpcuaSpec`** — `application_name`, `application_uri`, `product_uri`, and
+  `nodes[]` (**`OpcuaNode`** = `id` [string, at `ns=1;s=id`], `tag`/`static`,
+  `scale`, `kind` [`analog` Double / `bool` Boolean], `writable`, `label`).
 
 ---
 
@@ -593,23 +645,76 @@ service that is meant to be attacked. Captured data persists on the
 
 To run a **gaseoducto (transport)** and a **biometano (biomethane)** site as two
 independent cloud VMs at different providers, feeding a **Wazuh** SIEM over a
-WireGuard management overlay (plain WireGuard or Tailscale), see
+management overlay (plain WireGuard or Tailscale; summary below), see
 **[docs/deployment-wazuh.md](docs/deployment-wazuh.md)**. That guide covers
 sizing and hosting choices (the cheapest layout puts Wazuh on a cloud free
-tier and each honeypot on the smallest VPS plan of a different provider), the network
-topology and one-way-telemetry firewall model, an egress tripwire for breakout
-detection, the per-site instance configs, Wazuh ingestion (native JSON +
-optional CEF) with cross-site correlation, believability of the two sites, and
-**how/when the environment is reset after a compromise**. Ready-to-use
+tier and each honeypot on the smallest VPS plan of a different provider), the
+network topology and one-way-telemetry firewall model, an egress tripwire for
+breakout detection, the all-in-one provisioner, the per-site instance configs,
+Wazuh ingestion (native JSON + optional CEF) with cross-site correlation,
+believability of the two sites, **how/when the environment is reset after a
+compromise**, the optional T-Pot sensor, and post-deploy validation. An HTML
+version with diagrams is at [docs/index.html](docs/index.html). Ready-to-use
 artifacts:
 
 | Path | Role |
 |------|------|
+| [`deploy/provision.sh`](deploy/provision.sh) / [`deploy/cloud-init/`](deploy/cloud-init/) | all-in-one provisioner and per-VM user-data |
 | [`config/honeygas.transport.yaml`](config/honeygas.transport.yaml) / [`config/honeygas.biomethane.yaml`](config/honeygas.biomethane.yaml) | per-site instance configs |
 | [`docker/compose.transport.yml`](docker/compose.transport.yml) / [`docker/compose.biomethane.yml`](docker/compose.biomethane.yml) | one hardened stack per VM |
 | [`docker/rebuild.sh`](docker/rebuild.sh) | container-level reset/clean |
-| [`deploy/`](deploy/) | honeypot and hub host firewalls, WireGuard templates, Tailscale policy + drop-in |
-| [`wazuh/`](wazuh/) | detection rules, host-agent config, optional CEF receiver |
+| [`deploy/nftables-honeypot.nft`](deploy/nftables-honeypot.nft) / [`deploy/wazuh-hub-firewall.sh`](deploy/wazuh-hub-firewall.sh) | honeypot and hub host firewalls for the overlay |
+| [`deploy/wg-*.conf.example`](deploy/) | WireGuard overlay templates (hub / honeypot / admin) |
+| [`deploy/tailscale-policy.hujson`](deploy/tailscale-policy.hujson) / [`deploy/tailscaled-egress.conf`](deploy/tailscaled-egress.conf) | Tailscale option: tailnet policy and egress drop-in |
+| [`wazuh/`](wazuh/) | detection rules (incl. T-Pot and the egress tripwire), host-agent config, optional CEF receiver |
+
+### Management overlay (WireGuard / Tailscale)
+
+The sites live at different providers, so there is no shared private subnet
+between them and the SIEM. A **management overlay** takes its place: every
+honeypot dials the Wazuh hub over an encrypted tunnel, and all telemetry and
+administration runs inside it. Nothing management-related is exposed on the
+honeypots' public IPs.
+
+```
+  provider 1               provider 2               provider 3
+  VM-A gaseoducto          VM-B biometano           Wazuh hub
+  (bait ports only)        (bait ports only)        (no inbound but the overlay)
+        │                        │                        ▲
+        └──────── overlay: honeypot → hub 1514/1515 + NTP only ───────┘
+                    hub never dials the honeypots · admin via overlay
+```
+
+What stays the same with either overlay:
+
+- **One-way telemetry.** Inside the tunnel, a honeypot reaches only the hub's
+  agent ports (1514 events, 1515 enrolment) and NTP. The hub never opens a
+  connection to a honeypot; honeypots never reach each other or the admin.
+- **Egress-locked honeypots.** The host firewall
+  ([`deploy/nftables-honeypot.nft`](deploy/nftables-honeypot.nft)) lets out only
+  the overlay's own transport. Every other outbound packet is logged
+  (`HONEYGAS-EGRESS-DENY`) and counted; the Wazuh agent polls the counter and
+  rule **100260** fires when it moves (breakout / call-home tripwire, also on
+  firewall tampering).
+- **No public SSH.** Admins reach the hub (dashboard, SSH) and the honeypots
+  (SSH) only through the overlay. The hub's own firewall is
+  [`deploy/wazuh-hub-firewall.sh`](deploy/wazuh-hub-firewall.sh).
+
+How the two options differ:
+
+| | Plain WireGuard (default) | Tailscale |
+|---|---|---|
+| Addressing | `10.99.0.0/24`, static (hub `.1`, sites `.11`/`.12`, admin `.100`) | 100.x tailnet addresses |
+| Hub exposure | `udp/51820`, silent to unauthenticated packets | none |
+| Access rules | host firewalls | tailnet policy ([`tailscale-policy.hujson`](deploy/tailscale-policy.hujson)) **and** host firewalls |
+| Honeypot egress | one destination (hub IP, `udp/51820`) | one process: `tailscaled`, matched by its cgroup ([`tailscaled-egress.conf`](deploy/tailscaled-egress.conf)) |
+| Keys / revocation | by hand, per peer | auth keys; remove the device in the admin console |
+| Third party | none | coordination service sees node metadata, not traffic |
+
+Tailscale nodes run with `--accept-dns=false` (no DNS exfiltration through
+`tailscaled`) and `--netfilter-mode=off` (the host firewalls stay in charge).
+After every reload of the honeypot firewall, restart `tailscaled`. Step-by-step
+instructions: §3–§5 of the guide for WireGuard, §8 for Tailscale.
 
 ## Data outputs
 
@@ -636,11 +741,14 @@ so runtime captures never land in version control.
 - **DNP3 points:** edit the `dnp3:` block in a profile (outstation link address,
   monitored points by index/group/tag, control points by index/group) to change
   what a Class 0 integrity read returns and which controls an attacker can try.
+- **OPC UA nodes:** edit the `opcua:` block in a profile (application identity
+  and variable nodes, `writable` marking control points) to change what the
+  server exposes at `ns=1;s=<id>` and which nodes an attacker can Write.
 - **New protocol:** subclass `honeygas.protocols.base.Service`, register it in
   `SERVICE_TYPES` in `honeygas/main.py`, add a listener entry in the config.
-  All six shipped listeners are now full emulations; `honeygas/protocols/`
-  (`s7comm.py`, `iec104.py`, `dnp3.py`) shows the pattern, and `tcp_capture.py`
-  is the capture-only fallback for a brand-new port before you promote it.
+  All seven shipped listeners are now full emulations; `honeygas/protocols/`
+  (`s7comm.py`, `iec104.py`, `dnp3.py`, `opcua.py`) shows the pattern, and
+  `tcp_capture.py` is the capture-only fallback for a brand-new port.
 - **YARA tagging:** set `quarantine.enable_yara: true`, drop rules at
   `config/rules.yar`, and `pip install yara-python`.
 

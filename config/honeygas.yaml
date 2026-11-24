@@ -107,3 +107,9 @@ listeners:
     port: 20000
     enabled: true
     label: "DNP3"
+
+  - name: opcua
+    type: opcua
+    port: 4840
+    enabled: true
+    label: "OPC UA (opc.tcp)"

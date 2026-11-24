@@ -27,6 +27,7 @@ from .protocols.dnp3 import Dnp3Service
 from .protocols.http_hmi import HttpHmiService
 from .protocols.iec104 import Iec104Service
 from .protocols.modbus import ModbusService
+from .protocols.opcua import OpcuaService
 from .protocols.s7comm import S7CommService
 from .protocols.tcp_capture import TcpCaptureService
 from .sim.process import build_simulator
@@ -39,6 +40,7 @@ SERVICE_TYPES = {
     "s7comm": S7CommService,
     "iec104": Iec104Service,
     "dnp3": Dnp3Service,
+    "opcua": OpcuaService,
     "tcp_capture": TcpCaptureService,
 }
 

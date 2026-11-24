@@ -175,6 +175,32 @@ class Dnp3Spec:
 
 
 @dataclass
+class OpcuaNode:
+    """A variable node exposed over OPC UA at ns=1;s=<ident>.
+
+    kind selects the Variant built-in type of the value:
+      "analog" -> Double (from `tag`/`static` * scale)
+      "bool"   -> Boolean (state from `tag`/`static`)
+    writable nodes are the control points an attacker can Write.
+    """
+    ident: str
+    tag: Optional[str] = None
+    static: Optional[float] = None
+    scale: float = 1.0
+    kind: str = "analog"
+    writable: bool = False
+    label: str = ""
+
+
+@dataclass
+class OpcuaSpec:
+    application_name: str = "HoneyGas SCADA Server"
+    application_uri: str = "urn:honeygas:server"
+    product_uri: str = "urn:honeygas:product"
+    nodes: List[OpcuaNode] = field(default_factory=list)
+
+
+@dataclass
 class Profile:
     name: str
     mode: str
@@ -187,6 +213,7 @@ class Profile:
     s7: Optional[S7Spec] = None
     iec104: Optional[Iec104Spec] = None
     dnp3: Optional[Dnp3Spec] = None
+    opcua: Optional[OpcuaSpec] = None
 
 
 def _reg_map(raw: dict) -> Dict[int, RegEntry]:
@@ -344,6 +371,28 @@ def load_profile(d: dict) -> Profile:
             controls=dcontrols,
         )
 
+    opcua = None
+    op = d.get("opcua")
+    if op:
+        onodes = [
+            OpcuaNode(
+                ident=str(n["id"]),
+                tag=n.get("tag"),
+                static=(float(n["static"]) if n.get("static") is not None else None),
+                scale=float(n.get("scale", 1.0)),
+                kind=n.get("kind", "analog"),
+                writable=bool(n.get("writable", False)),
+                label=n.get("label", ""),
+            )
+            for n in (op.get("nodes", []) or [])
+        ]
+        opcua = OpcuaSpec(
+            application_name=op.get("application_name", "HoneyGas SCADA Server"),
+            application_uri=op.get("application_uri", "urn:honeygas:server"),
+            product_uri=op.get("product_uri", "urn:honeygas:product"),
+            nodes=onodes,
+        )
+
     return Profile(
         name=d.get("name", "Unnamed"),
         mode=d.get("mode", "transport"),
@@ -356,4 +405,5 @@ def load_profile(d: dict) -> Profile:
         s7=s7,
         iec104=iec104,
         dnp3=dnp3,
+        opcua=opcua,
     )

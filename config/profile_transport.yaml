@@ -130,6 +130,26 @@ dnp3:
     - {index: 1, group: 12, label: "Main valve (CROB)"}
     - {index: 0, group: 41, label: "Pressure setpoint (analog output)"}
 
+# OPC UA server (opc.tcp, TCP/4840). Variable nodes at ns=1;s=<id>. Writable
+# nodes are the control points an attacker can Write; every Write is audited
+# (high), inventoried as evidence, and applied ONLY to the attacker's isolated
+# session view. kind: analog (Double) | bool (Boolean).
+opcua:
+  application_name: "OmniFlow Station SCADA"
+  application_uri: "urn:omniflow:gasnode07:scada"
+  product_uri: "urn:OmniFlow:OmniRTU-3000"
+  nodes:
+    - {id: line_pressure_bar,   tag: line_pressure_bar,   label: "Line pressure (bar)"}
+    - {id: flow_rate_knm3h,     tag: flow_rate_knm3h,     label: "Flow rate (kNm3/h)"}
+    - {id: gas_temperature_c,   tag: gas_temperature_c,   label: "Gas temperature (C)"}
+    - {id: inlet_pressure_bar,  tag: inlet_pressure_bar,  label: "Inlet pressure (bar)"}
+    - {id: outlet_pressure_bar, tag: outlet_pressure_bar, label: "Outlet pressure (bar)"}
+    - {id: odorant_level_pct,   tag: odorant_level_pct,   label: "Odorant level (%)"}
+    - {id: valve_position_pct,  tag: valve_position_pct,  writable: true, label: "Valve position setpoint (%)"}
+    - {id: station_online,  kind: bool, static: 1, label: "Station online"}
+    - {id: esd_trip,        kind: bool, static: 0, writable: true, label: "ESD trip"}
+    - {id: main_valve_open, kind: bool, static: 1, writable: true, label: "Main valve open"}
+
 # Veeder-Root style Automatic Tank Gauge (odorant / condensate tanks).
 atg:
   station: "DISTRIBUTION STATION 07"
