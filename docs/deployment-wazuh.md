@@ -73,6 +73,20 @@ agent**, which is a separate, minimal shipper — see §4.
 
 ## 3. Deploy each honeypot VM
 
+**Quick path — the all-in-one provisioner.** On a minimal Debian server, clone
+this repo and run `deploy/provision.sh`. It asks what mission the machine has
+(`gaseoducto`, `biometano` or `wazuh`) and leaves every service running: Docker
++ the right honeypot stack, the Wazuh agent (enrolled into its site group), a
+daily clean-rebuild timer, and the firewall. Non-interactive too, for cloud-init:
+
+```bash
+sudo MISSION=gaseoducto WAZUH_MANAGER_IP=10.20.0.10 deploy/provision.sh   # VM-A
+sudo MISSION=biometano  WAZUH_MANAGER_IP=10.20.0.10 deploy/provision.sh   # VM-B
+sudo MISSION=wazuh HONEYPOT_CIDR=10.10.0.0/24 ADMIN_CIDR=10.0.0.0/24 deploy/provision.sh
+```
+
+The manual steps below are what that script automates.
+
 On each VM (one per profile), install Docker, create the data dir owned by the
 container user, and bring up that VM's compose:
 
@@ -206,6 +220,7 @@ box down, the silence is itself the alert.
 
 | Path | Role |
 |------|------|
+| `deploy/provision.sh`             | all-in-one Debian provisioner (asks the mission) |
 | `config/honeygas.transport.yaml`  | gaseoducto instance config (transport profile) |
 | `config/honeygas.biomethane.yaml` | biometano instance config (biomethane profile) |
 | `docker/compose.transport.yml`    | VM-A stack (standard ports, own volume, hardened) |
