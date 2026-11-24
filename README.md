@@ -179,6 +179,7 @@ HoneyGas/
 │   ├── compose.transport.yml    # two-site deploy: gaseoducto VM
 │   ├── compose.biomethane.yml   # two-site deploy: biometano VM
 │   └── rebuild.sh               # container-level reset/clean after compromise
+├── deploy/                      # host firewalls + WireGuard overlay templates (two-site deploy)
 ├── wazuh/                       # Wazuh drop-ins: rules, host-agent config, CEF receiver
 ├── docs/
 │   └── deployment-wazuh.md      # two-site cloud deployment + Wazuh ingestion guide
@@ -591,18 +592,23 @@ service that is meant to be attacked. Captured data persists on the
 ### Two-site cloud deployment with Wazuh
 
 To run a **gaseoducto (transport)** and a **biometano (biomethane)** site as two
-independent cloud VMs feeding a **Wazuh** SIEM on a separate private network, see
-**[docs/deployment-wazuh.md](docs/deployment-wazuh.md)**. That guide covers the
-network topology and one-way-telemetry firewall model, the per-site instance
-configs, Wazuh ingestion (native JSON + optional CEF) with cross-site
-correlation, believability of the two sites, and **how/when the environment is
-reset after a compromise**. Ready-to-use artifacts:
+independent cloud VMs at different providers, feeding a **Wazuh** SIEM over a
+WireGuard management overlay, see
+**[docs/deployment-wazuh.md](docs/deployment-wazuh.md)**. That guide covers
+sizing and hosting choices (the cheapest layout puts Wazuh on a cloud free
+tier and each honeypot on the smallest VPS plan of a different provider), the network
+topology and one-way-telemetry firewall model, an egress tripwire for breakout
+detection, the per-site instance configs, Wazuh ingestion (native JSON +
+optional CEF) with cross-site correlation, believability of the two sites, and
+**how/when the environment is reset after a compromise**. Ready-to-use
+artifacts:
 
 | Path | Role |
 |------|------|
 | [`config/honeygas.transport.yaml`](config/honeygas.transport.yaml) / [`config/honeygas.biomethane.yaml`](config/honeygas.biomethane.yaml) | per-site instance configs |
 | [`docker/compose.transport.yml`](docker/compose.transport.yml) / [`docker/compose.biomethane.yml`](docker/compose.biomethane.yml) | one hardened stack per VM |
 | [`docker/rebuild.sh`](docker/rebuild.sh) | container-level reset/clean |
+| [`deploy/`](deploy/) | honeypot and hub host firewalls, WireGuard overlay templates |
 | [`wazuh/`](wazuh/) | detection rules, host-agent config, optional CEF receiver |
 
 ## Data outputs

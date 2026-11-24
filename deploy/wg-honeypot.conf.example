@@ -1,0 +1,18 @@
+# /etc/wireguard/wg0.conf on a honeypot VM.
+# Use 10.99.0.11 on VM-A (gaseoducto) and 10.99.0.12 on VM-B (biometano).
+#
+# The honeypot never listens for WireGuard (no ListenPort): it only dials the
+# hub, so it exposes no extra port. AllowedIPs routes just the hub and the
+# admin peer through the tunnel; everything else stays off it, and the host
+# firewall (deploy/nftables-honeypot.nft) drops it anyway.
+# No DNS= line: the box resolves nothing (all addresses are literal IPs).
+
+[Interface]
+Address    = 10.99.0.11/32
+PrivateKey = <THIS_VM_PRIVATE_KEY>
+
+[Peer]
+PublicKey           = <HUB_PUBLIC_KEY>
+Endpoint            = <HUB_PUBLIC_IP>:51820
+AllowedIPs          = 10.99.0.1/32, 10.99.0.100/32
+PersistentKeepalive = 25

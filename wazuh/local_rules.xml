@@ -67,4 +67,17 @@
     <mitre><id>T0846</id></mitre>
   </rule>
 
+  <!-- Host egress tripwire (wazuh/agent-ossec.conf, full_command): the honeypot
+       VM's firewall refused outbound traffic, i.e. the box tried to reach
+       something other than the Wazuh hub, or its firewall table was altered.
+       Rebuild the VM. Details on the host: journalctl -k -g HONEYGAS-EGRESS-DENY.
+       530 is Wazuh's parent rule for command output. -->
+  <rule id="100260" level="14">
+    <if_sid>530</if_sid>
+    <match>^ossec: output: 'honeygas-egress-denied'</match>
+    <check_diff />
+    <description>HoneyGas host: denied outbound traffic or firewall change on a honeypot VM - possible breakout, rebuild it</description>
+    <mitre><id>T0869</id></mitre>
+  </rule>
+
 </group>

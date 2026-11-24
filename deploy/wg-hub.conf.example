@@ -1,0 +1,31 @@
+# /etc/wireguard/wg0.conf on the Wazuh hub.
+# Management overlay 10.99.0.0/24. The hub is the only peer with a listening
+# port; honeypots and the admin dial in. Generate keys ON EACH HOST
+# (`umask 077; wg genkey | tee privatekey | wg pubkey > publickey`): private
+# keys never leave the machine they belong to.
+#
+# What each peer may do is enforced by deploy/wazuh-hub-firewall.sh, not here:
+# AllowedIPs only binds a peer to its own overlay address (anti-spoofing).
+#
+# After a VM-level rebuild of a honeypot, REPLACE its [Peer] block with the new
+# VM's public key: the old private key may have been copied by an attacker.
+
+[Interface]
+Address    = 10.99.0.1/24
+ListenPort = 51820
+PrivateKey = <HUB_PRIVATE_KEY>
+
+# VM-A gaseoducto (transport)
+[Peer]
+PublicKey  = <GASEODUCTO_PUBLIC_KEY>
+AllowedIPs = 10.99.0.11/32
+
+# VM-B biometano (biomethane)
+[Peer]
+PublicKey  = <BIOMETANO_PUBLIC_KEY>
+AllowedIPs = 10.99.0.12/32
+
+# Admin workstation (dashboard + SSH to the honeypots, routed by the hub)
+[Peer]
+PublicKey  = <ADMIN_PUBLIC_KEY>
+AllowedIPs = 10.99.0.100/32

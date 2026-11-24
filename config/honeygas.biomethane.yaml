@@ -42,7 +42,7 @@ alerts:
   min_severity: high
   syslog:
     enabled: true
-    host: "10.20.0.10"
+    host: "10.99.0.1"              # Wazuh hub (WireGuard overlay)
     port: 514
     protocol: udp
     facility: 16

@@ -1,0 +1,91 @@
+#!/usr/sbin/nft -f
+# ============================================================================
+# Host firewall for a HoneyGas honeypot VM (multi-provider topology).
+# ----------------------------------------------------------------------------
+# Install as /etc/nftables.conf and `systemctl enable --now nftables`.
+# See docs/deployment-wazuh.md section 5 for the safe way to apply it.
+#
+# Model: the VM exposes the ICS bait ports (published by Docker) and NOTHING
+# else, and its ONLY egress is the WireGuard tunnel to the Wazuh hub, inside
+# which only the Wazuh agent (1514/1515) and NTP (123) are allowed. Every other
+# outbound packet is logged with prefix HONEYGAS-EGRESS-DENY and counted in the
+# named counter `egress_denied`; the host Wazuh agent polls that counter and
+# Wazuh rule 100260 fires as soon as it moves (breakout / call-home tripwire).
+#
+# Docker coexistence: Docker keeps its own iptables(-nft) tables. This file only
+# touches its own table, so it NEVER uses `flush ruleset` (that would wipe
+# Docker's NAT rules and take the bait ports offline). The bait ports are
+# DNAT'ed by Docker straight to the container and traverse the FORWARD hook, so
+# the input/output policies below do not affect them. There is deliberately no
+# forward chain here.
+#
+# IPv4 only: real field sites are IPv4, so IPv6 is dropped in both directions
+# (also disable it with sysctl, see the guide).
+# ============================================================================
+
+# --- EDIT THESE -------------------------------------------------------------
+define HUB_PUBLIC = 192.0.2.10      # Wazuh hub public IP
+define WG_PORT    = 51820           # hub WireGuard listen port
+define HUB_WG     = 10.99.0.1       # hub address inside the overlay
+define ADMIN_WG   = 10.99.0.100     # admin peer address inside the overlay
+# ----------------------------------------------------------------------------
+
+# Idempotent reload: create-if-missing, delete, redefine (one atomic transaction).
+table inet honeygas_host
+delete table inet honeygas_host
+
+table inet honeygas_host {
+
+	# Polled by the Wazuh agent (wazuh/agent-ossec.conf, full_command). It must
+	# stay at 0 on a quiet box; any increase is a rebuild trigger.
+	counter egress_denied {
+		packets 0 bytes 0
+	}
+
+	chain input {
+		type filter hook input priority filter; policy drop;
+
+		iif "lo" accept
+		ct state established,related accept
+		ct state invalid drop
+		meta nfproto ipv6 drop
+
+		# DHCPv4 replies (lease renewals): without them the VPS loses its address.
+		udp sport 67 udp dport 68 accept
+
+		# Answer ping, as real field gateways/RTUs do. Rate-limited.
+		icmp type echo-request limit rate 5/second burst 10 packets accept
+
+		# Admin SSH: only through the WireGuard overlay, only from the admin peer.
+		# Public SSH is closed (break-glass = the provider's web console).
+		iifname "wg0" ip saddr $ADMIN_WG tcp dport 22 accept
+	}
+
+	chain output {
+		type filter hook output priority filter; policy drop;
+
+		oif "lo" accept
+		ct state established,related accept
+		meta nfproto ipv6 drop
+
+		# DHCPv4 lease renewals to the provider's DHCP server.
+		udp sport 68 udp dport 67 accept
+
+		# Link-local multicast/broadcast chatter (mDNS, LLMNR, SSDP...) cannot
+		# leave the segment: drop it silently so it never trips the counter.
+		ip daddr { 224.0.0.0/4, 255.255.255.255 } drop
+
+		# The ONLY internet egress: WireGuard (outer UDP) to the Wazuh hub...
+		ip daddr $HUB_PUBLIC udp dport $WG_PORT accept
+
+		# ...and, inside the tunnel, exactly the agent (1514 events, 1515
+		# enrolment) and NTP served by the hub.
+		oifname "wg0" ip daddr $HUB_WG tcp dport { 1514, 1515 } accept
+		oifname "wg0" ip daddr $HUB_WG udp dport 123 accept
+
+		# Anything else is a breakout / call-home signal: log (rate-limited),
+		# count, drop. Details: journalctl -k -g HONEYGAS-EGRESS-DENY
+		limit rate 5/second burst 10 packets log prefix "HONEYGAS-EGRESS-DENY " level warn
+		counter name "egress_denied" drop
+	}
+}

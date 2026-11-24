@@ -1,0 +1,14 @@
+# WireGuard config for the admin workstation (wg-quick, or import into the
+# WireGuard app). Gives access to the Wazuh dashboard at https://10.99.0.1
+# and SSH to the hub (10.99.0.1) and, routed by the hub, to the honeypots
+# (10.99.0.11, 10.99.0.12). Nothing else of yours goes through the tunnel.
+
+[Interface]
+Address    = 10.99.0.100/32
+PrivateKey = <ADMIN_PRIVATE_KEY>
+
+[Peer]
+PublicKey           = <HUB_PUBLIC_KEY>
+Endpoint            = <HUB_PUBLIC_IP>:51820
+AllowedIPs          = 10.99.0.0/24
+PersistentKeepalive = 25
