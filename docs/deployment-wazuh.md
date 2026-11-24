@@ -69,13 +69,16 @@ Note: the honeypot **container** itself has no egress at all (the compose
 `honeynet` is `internal`). The one allowed egress belongs to the **host Wazuh
 agent**, which is a separate, minimal shipper — see §4.
 
+Deploying the sites across different clouds? The same one-way model holds — the
+telemetry path just crosses a cloud boundary instead of a VPC. See §7.
+
 ---
 
 ## 3. Deploy each honeypot VM
 
 **Quick path — the all-in-one provisioner.** On a minimal Debian server, clone
 this repo and run `deploy/provision.sh`. It asks what mission the machine has
-(`gaseoducto`, `biometano` or `wazuh`) and leaves every service running: Docker
+(`gaseoducto`, `biometano`, `wazuh` or `tpot`) and leaves every service running: Docker
 + the right honeypot stack, the Wazuh agent (enrolled into its site group), a
 daily clean-rebuild timer, and the firewall. Non-interactive too, for cloud-init:
 
@@ -247,7 +250,88 @@ Deploy it with `MISSION=tpot` (menu option 4 of `provision.sh`) or the cloud-ini
 `deploy/cloud-init/tpot.yaml`. Cross-site correlation then also covers T-Pot: a
 source hitting both T-Pot and a HoneyGas site is a strong targeted-recon signal.
 
-## 7. File map
+## 7. Distributed (multi-cloud) deployment
+
+Spreading the sites across different cloud providers is not just possible, it is
+*better*: it gives you genuinely different ASNs and address ranges per site
+(reinforcing §1 — the sites stop looking like one operator) and isolates the
+blast radius across providers. The model from §2 still holds; only the plumbing
+between the sites and Wazuh changes, because the honeypot→Wazuh:1514 path now
+crosses a cloud boundary instead of living inside one VPC.
+
+```
+  Cloud A             Cloud B             Cloud C (private)
+  gaseoducto          biometano           Wazuh manager
+      │                   │                    ▲
+      └──────── overlay mesh (WireGuard / Tailscale / Nebula) ───────┘
+            honeypot → Wazuh:1514 only; Wazuh never dials back
+```
+
+Two patterns keep the "one-way, private SIEM" property across clouds:
+
+- **Overlay mesh (recommended).** Link every honeypot VM to the Wazuh node on a
+  private overlay with WireGuard, Tailscale or Nebula, and point each Wazuh agent
+  at the Wazuh node's **overlay IP** (set `WAZUH_MANAGER_IP` to it). Each
+  honeypot's egress is then limited to the mesh port to its Wazuh peer (e.g.
+  WireGuard UDP/51820, or Tailscale to its relays) and, over the tunnel, 1514 to
+  the Wazuh overlay IP — nothing else leaves. The manager and dashboard keep
+  **no public listener**; admins reach the dashboard over the same mesh.
+- **Public Wazuh endpoint + source-locked ingress.** Expose Wazuh `1514/tcp`
+  publicly but restrict ingress to the honeypots' public IPs, and lock each
+  honeypot's egress to that one IP:1514. Agent traffic is TLS-encrypted and
+  enrolment is authenticated. Simpler, but the SIEM now has an internet-facing
+  port — harden it, and prefer the mesh where you can.
+
+Per cloud, the provider's security groups / NSGs / firewall rules enforce the
+same table as §2 (bait ports in, egress only along the telemetry path, deny the
+rest); the on-box `ufw` from `provision.sh` is defence-in-depth, not the
+authoritative layer. With a mesh, also allow the mesh port outbound on each
+honeypot — the provisioner's egress allow-list covers only 1514/1515 + DNS/NTP
+by default. Cross-site correlation is unaffected: it happens on the manager,
+keyed by `src_ip`, regardless of which cloud each sensor sits in.
+
+---
+
+## 8. Validate the deployment
+
+From an authorised source only (never a production host), confirm each layer:
+
+- **Honeypot answers** — probe a bait port and expect a response, e.g.
+  `nmap -sV -p 502,102,2404,20000 <honeypot-ip>` or a Modbus/DNP3 client, then
+  watch the trail grow: `tail -f /opt/honeygas/data/audit/honeygas-audit.jsonl`.
+- **Egress is locked** — from the honeypot VM, an outbound to anything other than
+  the telemetry path should fail (`curl -m5 https://example.com` times out) while
+  the Wazuh agent stays connected. This proves a captured payload has nowhere to
+  call home.
+- **Wazuh sees it** — on the manager, `/var/ossec/bin/agent_control -l` lists each
+  agent as `Active`; in the dashboard, filter `rule.groups:honeygas` (and
+  `:tpot`) and confirm events, with the `site` field distinguishing the plants.
+- **Cross-site rule fires** — hit both sites from the same source and confirm the
+  level-13 "multiple sites / targeted recon" alert (rule `100250`).
+- **T-Pot (if deployed)** — reach it on `ssh -p 64295` and the UI at
+  `https://<ip>:64297`, and confirm its events arrive in Wazuh under group `tpot`.
+
+---
+
+## 9. Operations
+
+- **Retention / disk.** HoneyGas's audit JSONL grows unbounded — rotate it with
+  logrotate (the agent follows rotation); quarantine dedups by sha256 but still
+  grows, and a reset (`rebuild.sh`) wipes it after the evidence has shipped.
+  T-Pot keeps ~30 days under `~/tpotce/data`. Set an index retention / ISM policy
+  on the Wazuh indexer so its storage stays bounded.
+- **Updating / patching.** The honeypots are immutable: update by rebuilding the
+  golden image (new base image + `git pull`) and recreating the VM (§5b), not in
+  place. Update Wazuh via its documented upgrade path; update T-Pot with
+  `cd ~/tpotce && git pull` + reinstall (needs egress) or rebuild its VM.
+- **Alert routing.** The rules put control tampering at level 12 and
+  captures/restarts at 14. Route level ≥12 to wherever the on-call looks: Wazuh
+  `<email_alerts>` for mail, an `<integration>` block for Slack/webhook/TheHive,
+  and the VirusTotal integration to auto-enrich `capture.*` hashes.
+
+---
+
+## 10. File map
 
 | Path | Role |
 |------|------|

@@ -598,8 +598,9 @@ independent cloud VMs feeding a **Wazuh** SIEM on a separate private network, se
 **[docs/deployment-wazuh.md](docs/deployment-wazuh.md)**. That guide covers the
 network topology and one-way-telemetry firewall model, the per-site instance
 configs, Wazuh ingestion (native JSON + optional CEF) with cross-site
-correlation, believability of the two sites, and **how/when the environment is
-reset after a compromise**. Ready-to-use artifacts:
+correlation, believability of the two sites, **how/when the environment is reset after a
+compromise**, distributed multi-cloud networking, and post-deploy validation.
+Ready-to-use artifacts:
 
 | Path | Role |
 |------|------|
